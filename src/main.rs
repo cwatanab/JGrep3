@@ -3,8 +3,8 @@
 extern crate native_windows_gui as nwg;
 extern crate native_windows_derive as nwd;
 
-mod drives;
-mod search;
+use jgrep3::drives;
+use jgrep3::search;
 
 use nwd::NwgUi;
 use nwg::NativeUi;

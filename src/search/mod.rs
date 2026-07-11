@@ -1,10 +1,14 @@
+pub mod glob_mask;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-use regex::{Regex, RegexBuilder};
+use regex::RegexBuilder;
 use walkdir::WalkDir;
 use encoding_rs;
+
+use glob_mask::{matches_file_masks, parse_dir_masks, parse_file_masks};
 
 #[derive(Debug, Clone)]
 pub struct SearchResultItem {
@@ -20,35 +24,6 @@ pub enum SearchStatus {
     Progress { scanned_files: usize },
     Completed { elapsed_ms: u64, total_scanned: usize, match_count: usize },
     Error(String),
-}
-
-// Convert a glob pattern (e.g. *.txt) to a Regex
-fn glob_to_regex(pattern: &str) -> Result<Regex, regex::Error> {
-    let mut regex_str = String::new();
-    regex_str.push('^');
-    for c in pattern.chars() {
-        match c {
-            '*' => regex_str.push_str(".*"),
-            '?' => regex_str.push('.'),
-            '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '\\' | '|' => {
-                regex_str.push('\\');
-                regex_str.push(c);
-            }
-            _ => regex_str.push(c),
-        }
-    }
-    regex_str.push('$');
-    RegexBuilder::new(&regex_str)
-        .case_insensitive(true) // File masks are usually case-insensitive on Windows
-        .build()
-}
-
-// Check if a filename matches any of the semicolon/space separated file masks
-fn matches_masks(filename: &str, masks: &[Regex]) -> bool {
-    if masks.is_empty() {
-        return true;
-    }
-    masks.iter().any(|mask| mask.is_match(filename))
 }
 
 // Helper to read file and decode into String with SJS/EUC-JP fallbacks
@@ -131,35 +106,23 @@ pub fn run_search(
         None
     };
 
-    // Parse file masks (separated by semicolon, comma or space)
-    let file_masks: Vec<Regex> = file_mask_str
-        .split(|c| c == ';' || c == ',' || c == ' ')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .filter_map(|s| glob_to_regex(s).ok())
-        .collect();
+    let file_masks = match parse_file_masks(&file_mask_str) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = sender.send(SearchStatus::Error(format!("Invalid file mask: {}", e)));
+            notice_sender.notice();
+            return;
+        }
+    };
 
-    // Parse directory masks:
-    //   include:  src;lib   (empty / ** = all directories)
-    //   exclude:  !.git;!node_modules;!target
-    let mut dir_includes: Vec<Regex> = Vec::new();
-    let mut dir_excludes: Vec<Regex> = Vec::new();
-    for part in dir_mask_str.split(|c| c == ';' || c == ',' || c == ' ') {
-        let s = part.trim();
-        if s.is_empty() || s == "**" {
-            continue;
+    let dir_masks = match parse_dir_masks(&dir_mask_str) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = sender.send(SearchStatus::Error(format!("Invalid dir mask: {}", e)));
+            notice_sender.notice();
+            return;
         }
-        if let Some(ex) = s.strip_prefix('!') {
-            let ex = ex.trim();
-            if !ex.is_empty() {
-                if let Ok(re) = glob_to_regex(ex) {
-                    dir_excludes.push(re);
-                }
-            }
-        } else if let Ok(re) = glob_to_regex(s) {
-            dir_includes.push(re);
-        }
-    }
+    };
 
     let mut scanned_files = 0;
     let mut match_count = 0;
@@ -181,15 +144,7 @@ pub fn run_search(
                 Some(n) => n,
                 None => return false,
             };
-            // Exclude wins (e.g. !.git, !node_modules)
-            if !dir_excludes.is_empty() && matches_masks(name, &dir_excludes) {
-                return false;
-            }
-            // Include filter (if any): only enter matching dirs
-            if !dir_includes.is_empty() && !matches_masks(name, &dir_includes) {
-                return false;
-            }
-            true
+            dir_masks.allow_dir(name)
         });
 
     for entry in walker.filter_map(|e| e.ok()) {
@@ -205,7 +160,7 @@ pub fn run_search(
 
         // Apply file mask check
         if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-            if !matches_masks(file_name, &file_masks) {
+            if !matches_file_masks(file_name, &file_masks) {
                 continue;
             }
         } else {
