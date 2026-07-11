@@ -10,10 +10,16 @@ Rust と native-windows-gui で実装したデスクトップアプリで、**Jm
 - 正規表現検索 / リテラル検索
 - ファイルマスク・フォルダマスク（例: `*.rs;*.toml` / `**;!.git`）
 - サブディレクトリ検索
-- 文字コード自動判別（UTF-8 / Shift_JIS / EUC-JP）
+- 文字コード自動判別（UTF-8 / Shift_JIS / EUC-JP / ISO-2022-JP）
 - ダーク / ライト / システムテーマ
 - 検索結果のダブルクリックで外部エディタを起動（VS Code / サクラエディタ / 秀丸 / Notepad++ など）
 - バックグラウンド検索・進捗表示（Esc で停止）
+
+## スクリーンショット
+
+| ライト | ダーク |
+|--------|--------|
+| ![ライト](docs/screenshot-light.png) | ![ダーク](docs/screenshot-dark.png) |
 
 ## 必要環境
 
@@ -46,7 +52,7 @@ target/release/JGrep3.exe
 | サブディレクトリも検索対象 | 配下のフォルダも再帰的に検索する |
 | 大文字・小文字を区別する | 大文字・小文字を区別してマッチする |
 | 正規表現を使用しない | オフのとき正規表現、オンのとき通常の文字列検索 |
-| 文字コードを自動判別する | UTF-8 / Shift_JIS / EUC-JP を自動判別する |
+| 文字コードを自動判別する | UTF-8 / Shift_JIS / EUC-JP / ISO-2022-JP を自動判別する |
 
 ### マスク
 
@@ -140,18 +146,11 @@ src/
 │   ├── decode.rs      # ファイル読込・エンコーディング判別・バイナリ検出
 │   ├── walk.rs        # ディレクトリ列挙 (Win32 FindFirstFileW)
 │   └── pool.rs        # 並列ワーカプール・進捗・バッチ通知
-└── examples/
-    └── bench_search.rs # 検索ベンチマーク CLI
 ```
 
 ## パフォーマンス
 
 並列検索エンジンにより高速な全文検索を実現します。
-
-```bash
-# CLI ベンチマーク
-cargo run --release --example bench_search -- <ディレクトリ> <検索文字列> <ファイルマスク> <ディレクトリマスク>
-```
 
 参考スコア（cargo registry index: 34,573 *.rs ファイル）:
 

@@ -1,6 +1,6 @@
 //! ファイル読込・デコード・バイナリ判定。
 //!
-//! UTF-8 優先、Shift_JIS / EUC-JP へのフォールバック。
+//! UTF-8 優先、Shift_JIS / EUC-JP / ISO-2022-JP へのフォールバック。
 //! NUL バイト検出によるバイナリファイルスキップ。
 
 use std::fs::File;
@@ -43,6 +43,10 @@ pub fn read_and_decode_file(
             return Ok(Some(res.into_owned()));
         }
         let (res, _, has_errors) = encoding_rs::EUC_JP.decode(&buffer);
+        if !has_errors {
+            return Ok(Some(res.into_owned()));
+        }
+        let (res, _, has_errors) = encoding_rs::ISO_2022_JP.decode(&buffer);
         if !has_errors {
             return Ok(Some(res.into_owned()));
         }
