@@ -13,7 +13,7 @@ pub use settings_dialog_ui::SettingsDialogUi;
 // Settings Dialog Window
 #[derive(Default, NwgUi)]
 pub struct SettingsDialog {
-    #[nwg_control(size: (600, 360), position: (300, 300), title: "設定", flags: "WINDOW")]
+    #[nwg_control(size: (600, 370), position: (300, 300), title: "設定", flags: "WINDOW")]
     #[nwg_events(OnWindowClose: [SettingsDialog::handle_close])]
     pub window: nwg::Window,
 
@@ -90,7 +90,7 @@ pub struct SettingsDialog {
     pub cb_list_font_size: nwg::ComboBox<String>,
 
     // External editor group
-    #[nwg_control(parent: window, size: (570, 125), position: (15, 180), flags: "VISIBLE|BORDER")]
+    #[nwg_control(parent: window, size: (570, 135), position: (15, 180), flags: "VISIBLE|BORDER")]
     pub editor_frame: nwg::Frame,
 
     #[nwg_control(parent: window, text: "  エディタ  ", position: (25, 170), size: (60, 20))]
@@ -133,7 +133,7 @@ pub struct SettingsDialog {
     #[nwg_control(parent: editor_frame, text: "=列番号", position: (495, 95), size: (55, 18))]
     pub lbl_help_col_desc: nwg::Label,
 
-    #[nwg_control(parent: window, text: "閉じる", position: (260, 320), size: (80, 25))]
+    #[nwg_control(parent: window, text: "閉じる", position: (260, 330), size: (80, 25))]
     #[nwg_events(OnButtonClick: [SettingsDialog::handle_close])]
     pub btn_close: nwg::Button,
 
