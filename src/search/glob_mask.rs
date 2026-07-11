@@ -1,9 +1,11 @@
 use regex::{Regex, RegexBuilder};
 
+#[derive(Clone)]
 pub struct FileMasks {
     patterns: Vec<Regex>,
 }
 
+#[derive(Clone)]
 pub struct DirMaskSet {
     includes: Vec<Regex>,
     excludes: Vec<Regex>,

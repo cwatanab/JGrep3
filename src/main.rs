@@ -2174,7 +2174,7 @@ pub struct JGrepApp {
 
     // Internal state management
     path_map: RefCell<HashMap<isize, PathBuf>>,
-    result_file_map: RefCell<HashMap<usize, (String, usize, usize)>>,
+    result_file_map: RefCell<HashMap<usize, (Arc<str>, usize, usize)>>,
     search_state: RefCell<Option<SearchState>>,
     is_vscode_available: RefCell<bool>,
     setting_dialog: RefCell<Option<SettingsDialogUi>>,
@@ -3286,7 +3286,7 @@ impl JGrepApp {
             self.list_view.insert_item(nwg::InsertListViewItem {
                 index: Some(idx as i32),
                 column_index: 0,
-                text: Some(item.file_path.clone()),
+                text: Some(item.file_path.to_string()),
                 image: None,
             });
             self.list_view.update_item(idx, nwg::InsertListViewItem {
@@ -3302,7 +3302,7 @@ impl JGrepApp {
                 image: None,
             });
 
-            file_map.insert(idx, (item.file_path.clone(), item.line_number, item.column_number));
+            file_map.insert(idx, (Arc::clone(&item.file_path), item.line_number, item.column_number));
         }
 
         self.update_sort_header_indicators(Some(col_idx), ascending);
@@ -3526,7 +3526,7 @@ impl JGrepApp {
                     self.list_view.insert_item(nwg::InsertListViewItem {
                         index: Some(idx as i32),
                         column_index: 0,
-                        text: Some(item.file_path.clone()),
+                        text: Some(item.file_path.to_string()),
                         image: None,
                     });
                     self.list_view.update_item(idx, nwg::InsertListViewItem {
@@ -3542,7 +3542,7 @@ impl JGrepApp {
                         image: None,
                     });
 
-                    self.result_file_map.borrow_mut().insert(idx, (item.file_path, item.line_number, item.column_number));
+                    self.result_file_map.borrow_mut().insert(idx, (Arc::clone(&item.file_path), item.line_number, item.column_number));
                 }
                 SearchStatus::Matches(items) => {
                     for item in &items {
@@ -3552,7 +3552,7 @@ impl JGrepApp {
                         self.list_view.insert_item(nwg::InsertListViewItem {
                             index: Some(idx as i32),
                             column_index: 0,
-                            text: Some(item.file_path.clone()),
+                            text: Some(item.file_path.to_string()),
                             image: None,
                         });
                         self.list_view.update_item(idx, nwg::InsertListViewItem {
@@ -3568,7 +3568,7 @@ impl JGrepApp {
                             image: None,
                         });
 
-                        self.result_file_map.borrow_mut().insert(idx, (item.file_path.clone(), item.line_number, item.column_number));
+                        self.result_file_map.borrow_mut().insert(idx, (Arc::clone(&item.file_path), item.line_number, item.column_number));
                     }
                 }
                 SearchStatus::Progress { scanned_files } => {
@@ -3640,13 +3640,13 @@ impl JGrepApp {
                     if path_lower.contains("code") {
                         cmd.arg("-g").arg(format!("{}:{}:{}", path_str, line_num, col_num));
                     } else if path_lower.contains("sakura") {
-                        cmd.arg(format!("-Y={}", line_num)).arg(format!("-X={}", col_num)).arg(path_str);
+                        cmd.arg(format!("-Y={}", line_num)).arg(format!("-X={}", col_num)).arg(path_str.as_ref());
                     } else if path_lower.contains("hidemaru") {
-                        cmd.arg(format!("/j{}", line_num)).arg(format!(",{}", col_num)).arg(path_str);
+                        cmd.arg(format!("/j{}", line_num)).arg(format!(",{}", col_num)).arg(path_str.as_ref());
                     } else if path_lower.contains("notepad++") {
-                        cmd.arg(format!("-n{}", line_num)).arg(format!("-c{}", col_num)).arg(path_str);
+                        cmd.arg(format!("-n{}", line_num)).arg(format!("-c{}", col_num)).arg(path_str.as_ref());
                     } else {
-                        cmd.arg(path_str);
+                        cmd.arg(path_str.as_ref());
                     }
                 }
                 let _ = cmd.creation_flags(0x08000000).spawn();

@@ -2,9 +2,11 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{mpsc::Sender, Arc};
+use std::sync::{mpsc::Sender, Arc, Mutex};
 use std::thread;
 use std::time::Instant;
+
+use memchr::memmem;
 
 use native_windows_gui::NoticeSender;
 
@@ -17,27 +19,13 @@ fn notify(notice: &Option<NoticeSender>) {
 use super::decode::{looks_binary, read_and_decode_file};
 use super::glob_mask::{parse_dir_masks, parse_file_masks};
 use super::match_engine::Matcher;
-use super::walk::{collect_files, WalkConfig};
+use super::walk::{collect_files_parallel, WalkConfig};
 use super::{SearchResultItem, SearchStatus};
-
-fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-fn find_subsequence_case_insensitive(haystack: &[u8], needle_lower: &[u8]) -> Option<usize> {
-    let n = needle_lower.len();
-    haystack.windows(n).position(|w| {
-        w.iter()
-            .zip(needle_lower.iter())
-            .all(|(a, b)| a.to_ascii_lowercase() == *b)
-    })
-}
 
 fn search_bytes(
     buf: &[u8],
     matcher: &Matcher,
     path: &Path,
-    _auto_detect: bool,
     batch: &mut Vec<SearchResultItem>,
     match_count: &AtomicUsize,
 ) -> bool {
@@ -55,53 +43,135 @@ fn search_bytes(
         return false;
     }
 
-    let needle_lower_bytes = needle_lower.as_ref().map(|s| s.as_bytes());
+    let file_path: Arc<str> = Arc::from(path.to_string_lossy().as_ref());
 
-    let mut line_idx: usize = 0;
-    let mut pos = 0;
-    while pos < buf.len() {
-        let line_start = pos;
-        let mut line_end = buf.len();
-        let mut found_newline = false;
+    if *case_sensitive {
+        let finder = memmem::Finder::new(needle_bytes);
+        let mut matches = finder.find_iter(buf).peekable();
+        if matches.peek().is_none() {
+            return true;
+        }
 
-        for i in pos..buf.len() {
-            if buf[i] == b'\n' {
-                line_end = i;
-                pos = i + 1;
-                found_newline = true;
+        let mut line_idx: usize = 0;
+        let mut pos = 0;
+        loop {
+            let line_start = pos;
+            let mut line_end = buf.len();
+            let mut found_newline = false;
+
+            for i in pos..buf.len() {
+                if buf[i] == b'\n' {
+                    line_end = i;
+                    pos = i + 1;
+                    found_newline = true;
+                    break;
+                }
+            }
+            if !found_newline {
+                pos = buf.len();
+            }
+
+            let content_end = if line_end > 0 && buf[line_end.saturating_sub(1)] == b'\r' {
+                line_end.saturating_sub(1)
+            } else {
+                line_end
+            };
+
+            line_idx += 1;
+
+            if let Some(first_match) = matches.peek() {
+                if *first_match < line_end {
+                    let content_bytes = &buf[line_start..content_end];
+                    let column = finder.find(content_bytes).map(|c| c + 1).unwrap_or(1);
+                    let lossy = String::from_utf8_lossy(content_bytes);
+                    let line_content = truncate_line(&lossy, matcher);
+                    batch.push(SearchResultItem {
+                        file_path: Arc::clone(&file_path),
+                        line_number: line_idx,
+                        column_number: column,
+                        line_content,
+                    });
+                    match_count.fetch_add(1, Ordering::Relaxed);
+                    while matches.next_if(|&m| m < line_end).is_some() {}
+                }
+            }
+
+            if pos >= buf.len() {
                 break;
             }
         }
-        if !found_newline {
-            pos = buf.len();
-        }
+    } else {
+        let needle_lower_bytes = needle_lower.as_ref().map(|s| s.as_bytes());
+        let nb = needle_lower_bytes.unwrap_or(needle_bytes);
+        let n = nb.len();
 
-        let content_end = if line_end > 0 && buf[line_end.saturating_sub(1)] == b'\r' {
-            line_end.saturating_sub(1)
-        } else {
-            line_end
+        let _finder = memmem::Finder::new(nb);
+        let finder_lowercase = |haystack: &[u8]| -> Option<usize> {
+            if haystack.len() < n {
+                return None;
+            }
+            for i in 0..=haystack.len() - n {
+                let w = &haystack[i..i + n];
+                let mut ok = true;
+                for j in 0..n {
+                    if w[j].to_ascii_lowercase() != nb[j] {
+                        ok = false;
+                        break;
+                    }
+                }
+                if ok {
+                    return Some(i);
+                }
+            }
+            None
         };
 
-        line_idx += 1;
+        let mut line_idx: usize = 0;
+        let mut pos = 0;
+        while pos < buf.len() {
+            let line_start = pos;
+            let mut line_end = buf.len();
+            let mut found_newline = false;
 
-        let content_bytes = &buf[line_start..content_end];
+            for i in pos..buf.len() {
+                if buf[i] == b'\n' {
+                    line_end = i;
+                    pos = i + 1;
+                    found_newline = true;
+                    break;
+                }
+            }
+            if !found_newline {
+                pos = buf.len();
+            }
 
-        let hit_pos = if *case_sensitive {
-            find_subsequence(content_bytes, needle_bytes)
-        } else {
-            find_subsequence_case_insensitive(content_bytes, needle_lower_bytes.unwrap_or(needle_bytes))
-        };
+            let content_end = if line_end > 0 && buf[line_end.saturating_sub(1)] == b'\r' {
+                line_end.saturating_sub(1)
+            } else {
+                line_end
+            };
 
-        if let Some(column) = hit_pos {
-            let lossy = String::from_utf8_lossy(content_bytes);
-            let line_content = truncate_line(&lossy, matcher);
-            batch.push(SearchResultItem {
-                file_path: path.to_string_lossy().into_owned(),
-                line_number: line_idx,
-                column_number: column + 1,
-                line_content,
-            });
-            match_count.fetch_add(1, Ordering::Relaxed);
+            line_idx += 1;
+
+            let content_bytes = &buf[line_start..content_end];
+
+            let hit_pos = finder_lowercase(content_bytes);
+
+            if let Some(column) = hit_pos {
+                let lossy = String::from_utf8_lossy(content_bytes);
+                let line_content = truncate_line(&lossy, matcher);
+                batch.push(SearchResultItem {
+                    file_path: Arc::clone(&file_path),
+                    line_number: line_idx,
+                    column_number: column + 1,
+                    line_content,
+                });
+                match_count.fetch_add(1, Ordering::Relaxed);
+            }
+
+            if pos >= buf.len() {
+                break;
+            }
         }
     }
 
@@ -169,7 +239,15 @@ pub fn run(
         dir_masks,
     };
 
-    let files = collect_files(&search_dir, &walk_cfg, &cancellation_token);
+    let (path_tx, path_rx) = std::sync::mpsc::channel::<PathBuf>();
+    let path_rx = Arc::new(Mutex::new(path_rx));
+    let walk_cfg_clone = walk_cfg;
+    let cancel_clone = Arc::clone(&cancellation_token);
+
+    thread::spawn(move || {
+        collect_files_parallel(&search_dir, walk_cfg_clone, cancel_clone, path_tx);
+    });
+
     if cancellation_token.load(Ordering::Relaxed) {
         finish(&sender, &notice_sender, start, 0, 0);
         return;
@@ -180,15 +258,12 @@ pub fn run(
         .unwrap_or(4)
         .max(1);
 
-    let files = Arc::new(files);
-    let next_index = Arc::new(AtomicUsize::new(0));
     let match_count = Arc::new(AtomicUsize::new(0));
     let scanned = Arc::new(AtomicUsize::new(0));
 
     let mut handles = Vec::with_capacity(workers);
     for _ in 0..workers {
-        let files = Arc::clone(&files);
-        let next_index = Arc::clone(&next_index);
+        let path_rx = Arc::clone(&path_rx);
         let matcher = Arc::clone(&matcher);
         let cancel = Arc::clone(&cancellation_token);
         let sender = sender.clone();
@@ -203,11 +278,13 @@ pub fn run(
                 if cancel.load(Ordering::Relaxed) {
                     break;
                 }
-                let i = next_index.fetch_add(1, Ordering::Relaxed);
-                if i >= files.len() {
-                    break;
-                }
-                let path = &files[i];
+                let path = {
+                    let rx = path_rx.lock().unwrap();
+                    match rx.recv() {
+                        Ok(p) => p,
+                        Err(_) => break,
+                    }
+                };
                 let n = scanned.fetch_add(1, Ordering::Relaxed) + 1;
                 if n % PROGRESS_EVERY == 0 {
                     let _ = sender.send(SearchStatus::Progress { scanned_files: n });
@@ -215,7 +292,7 @@ pub fn run(
                 }
 
                 buf.clear();
-                let mut file = match File::open(path) {
+                let mut file = match File::open(&path) {
                     Ok(f) => f,
                     Err(_) => continue,
                 };
@@ -229,8 +306,7 @@ pub fn run(
                 if search_bytes(
                     &buf,
                     &matcher,
-                    path,
-                    auto_detect_encoding,
+                    &path,
                     &mut batch,
                     &match_count,
                 ) {
@@ -240,10 +316,12 @@ pub fn run(
                     continue;
                 }
 
-                let content = match read_and_decode_file(path, auto_detect_encoding) {
+                let content = match read_and_decode_file(&path, auto_detect_encoding) {
                     Ok(Some(s)) => s,
                     _ => continue,
                 };
+
+                let file_path: Arc<str> = Arc::from(path.to_string_lossy().as_ref());
 
                 for (line_idx, line) in content.lines().enumerate() {
                     if cancel.load(Ordering::Relaxed) {
@@ -255,7 +333,7 @@ pub fn run(
                     let line_num = line_idx + 1;
                     let line_content = truncate_line(line, matcher.as_ref());
                     batch.push(SearchResultItem {
-                        file_path: path.to_string_lossy().into_owned(),
+                        file_path: Arc::clone(&file_path),
                         line_number: line_num,
                         column_number: hit.column_chars,
                         line_content,

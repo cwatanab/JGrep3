@@ -1,5 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
+use std::thread;
+use std::sync::Arc;
 
 use windows::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows::Win32::Storage::FileSystem::{
@@ -9,6 +12,7 @@ use windows::core::PCWSTR;
 
 use super::glob_mask::{matches_file_masks, DirMaskSet, FileMasks};
 
+#[derive(Clone)]
 pub struct WalkConfig {
     pub recursive: bool,
     pub file_masks: FileMasks,
@@ -20,6 +24,67 @@ pub fn collect_files(root: &Path, cfg: &WalkConfig, cancel: &AtomicBool) -> Vec<
     let mut out = Vec::new();
     walk_dir(root, cfg, cancel, &mut out);
     out
+}
+
+/// Collect matching file paths under root, sending to channel as found.
+/// Top-level subdirectories are processed in parallel.
+pub fn collect_files_parallel(
+    root: &Path,
+    cfg: WalkConfig,
+    cancel: Arc<AtomicBool>,
+    sender: Sender<PathBuf>,
+) {
+    let pattern = root.join("*");
+    let wide = path_to_wide(&pattern);
+    let mut data = WIN32_FIND_DATAW::default();
+
+    let handle = match unsafe { FindFirstFileW(PCWSTR(wide.as_ptr()), &mut data) } {
+        Ok(h) if h != INVALID_HANDLE_VALUE => h,
+        _ => return,
+    };
+
+    let mut handles = Vec::new();
+
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let name = wide_to_string(&data.cFileName);
+        if name != "." && name != ".." {
+            let is_dir = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0) != 0;
+            let path = root.join(&name);
+            if is_dir {
+                if cfg.recursive && cfg.dir_masks.allow_dir(&name) {
+                    let cfg = cfg.clone();
+                    let cancel = Arc::clone(&cancel);
+                    let s = sender.clone();
+                    handles.push(thread::spawn(move || {
+                        let mut out = Vec::new();
+                        walk_dir(&path, &cfg, &cancel, &mut out);
+                        for p in out {
+                            if s.send(p).is_err() {
+                                break;
+                            }
+                        }
+                    }));
+                }
+            } else if matches_file_masks(&name, &cfg.file_masks) {
+                if sender.send(path).is_err() {
+                    break;
+                }
+            }
+        }
+        if unsafe { FindNextFileW(handle, &mut data) }.is_err() {
+            break;
+        }
+    }
+    unsafe {
+        let _ = FindClose(handle);
+    }
+
+    for h in handles {
+        let _ = h.join();
+    }
 }
 
 fn walk_dir(dir: &Path, cfg: &WalkConfig, cancel: &AtomicBool, out: &mut Vec<PathBuf>) {
@@ -45,7 +110,6 @@ fn walk_dir(dir: &Path, cfg: &WalkConfig, cancel: &AtomicBool, out: &mut Vec<Pat
             let is_dir = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0) != 0;
             let path = dir.join(&name);
             if is_dir {
-                // non-recursive: never enter subdirectories (same as WalkDir max_depth(1))
                 if cfg.recursive && cfg.dir_masks.allow_dir(&name) {
                     walk_dir(&path, cfg, cancel, &mut *out);
                 }
@@ -166,6 +230,47 @@ mod tests {
         let cancel = AtomicBool::new(true);
         let files = collect_files(&root, &cfg, &cancel);
         assert!(files.is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn parallel_collects_recursive() {
+        let root = std::env::temp_dir().join("jgrep_walk_parallel");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        write_file(&root.join("root.txt"), "r");
+        write_file(&root.join("src").join("main.rs"), "m");
+        write_file(&root.join(".git").join("config"), "g");
+        write_file(&root.join("lib").join("helper.rs"), "h");
+
+        let cfg = WalkConfig {
+            recursive: true,
+            file_masks: parse_file_masks("*.rs").unwrap(),
+            dir_masks: parse_dir_masks("**;!.git").unwrap(),
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cfg_clone = cfg.clone();
+        let cancel_clone = Arc::clone(&cancel);
+        let root_clone = root.clone();
+        let h = thread::spawn(move || {
+            collect_files_parallel(&root_clone, cfg_clone, cancel_clone, tx);
+        });
+        let mut files: Vec<PathBuf> = rx.into_iter().collect();
+        h.join().unwrap();
+        files.sort();
+        let mut paths: Vec<String> = files
+            .iter()
+            .map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"))
+            .collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                "lib/helper.rs".to_string(),
+                "src/main.rs".to_string(),
+            ]
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }

@@ -13,7 +13,7 @@ use native_windows_gui::NoticeSender;
 
 #[derive(Debug, Clone)]
 pub struct SearchResultItem {
-    pub file_path: String,
+    pub file_path: Arc<str>,
     pub line_number: usize,
     pub column_number: usize,
     pub line_content: String,

@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 native-windows-gui = { version = "1.0.12", features = ["combobox", "list-view", "tree-view", "menu", "status-bar", "image-list", "cursor", "file-dialog", "frame", "high-dpi", "progress-bar"] }
 native-windows-derive = "1.0.5"
+memchr = "2"
 regex = "1.10"
 encoding_rs = "0.8"
 serde = { version = "1", features = ["derive"] }
