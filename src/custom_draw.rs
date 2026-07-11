@@ -54,85 +54,87 @@ pub unsafe extern "system" fn progress_bar_subclass_proc(
 
     let dark = ref_data != 0;
 
-    match msg {
-        WM_ERASEBKGND => LRESULT(1),
-        WM_TIMER => {
-            let cur = PROGRESS_PHASE.load(Ordering::Relaxed);
-            PROGRESS_PHASE.store((cur + 2) % 360, Ordering::Relaxed);
-            let _ = InvalidateRect(hwnd, None, BOOL(0));
-            LRESULT(0)
-        }
-        WM_PAINT => {
-            let mut ps = PAINTSTRUCT::default();
-            let hdc = BeginPaint(hwnd, &mut ps);
-            if !hdc.0.is_null() {
-                let mut rc = RECT::default();
-                let _ = GetClientRect(hwnd, &mut rc);
-                let w = rc.right - rc.left;
-                let h = rc.bottom - rc.top;
-
-                let mem_dc = CreateCompatibleDC(hdc);
-                let mem_bmp = CreateCompatibleBitmap(hdc, w, h);
-                let old_bmp = SelectObject(mem_dc, HGDIOBJ(mem_bmp.0));
-
-                // Draw sleek flat background
-                let bg_color = if dark { 0x001C1C1C } else { 0x00E0E0E0 };
-                let bg_brush = CreateSolidBrush(COLORREF(bg_color));
-                let _ = FillRect(mem_dc, &rc, bg_brush);
-                let _ = DeleteObject(HGDIOBJ(bg_brush.0));
-
-                // Neon gradient flow bar
-                let phase = PROGRESS_PHASE.load(Ordering::Relaxed) as f32 / 360.0;
-                let bar_width = (w as f32 * 0.35).max(80.0) as i32;
-                let total_travel = w + bar_width;
-                let start_x = (total_travel as f32 * phase) as i32 - bar_width;
-
-                for dx in 0..bar_width {
-                    let t = dx as f32 / bar_width as f32;
-                    let (r, g, b) = if dark {
-                        // Cyan (0, 240, 255) -> Purple (180, 0, 255)
-                        let r = (0.0 * (1.0 - t) + 180.0 * t) as u32;
-                        let g = (240.0 * (1.0 - t) + 0.0 * t) as u32;
-                        let b = (255.0 * (1.0 - t) + 255.0 * t) as u32;
-                        (r, g, b)
-                    } else {
-                        // Soft Blue (0, 150, 240) -> Soft Purple (160, 100, 240)
-                        let r = (0.0 * (1.0 - t) + 160.0 * t) as u32;
-                        let g = (150.0 * (1.0 - t) + 100.0 * t) as u32;
-                        let b = (240.0 * (1.0 - t) + 240.0 * t) as u32;
-                        (r, g, b)
-                    };
-                    let color = (b << 16) | (g << 8) | r;
-                    let x = start_x + dx;
-                    if x >= 0 && x < w {
-                        let col_rect = RECT {
-                            left: x,
-                            top: 0,
-                            right: x + 1,
-                            bottom: h,
-                        };
-                        let col_brush = CreateSolidBrush(COLORREF(color));
-                        let _ = FillRect(mem_dc, &col_rect, col_brush);
-                        let _ = DeleteObject(HGDIOBJ(col_brush.0));
-                    }
-                }
-
-                // Smooth border outline
-                let border_color = if dark { 0x00282828 } else { 0x00CCCCCC };
-                let border_brush = CreateSolidBrush(COLORREF(border_color));
-                let _ = windows::Win32::Graphics::Gdi::FrameRect(mem_dc, &rc, border_brush);
-                let _ = DeleteObject(HGDIOBJ(border_brush.0));
-
-                let _ = windows::Win32::Graphics::Gdi::BitBlt(hdc, 0, 0, w, h, mem_dc, 0, 0, windows::Win32::Graphics::Gdi::SRCCOPY);
-
-                let _ = SelectObject(mem_dc, old_bmp);
-                let _ = DeleteObject(HGDIOBJ(mem_bmp.0));
-                let _ = DeleteDC(mem_dc);
+    unsafe {
+        match msg {
+            WM_ERASEBKGND => LRESULT(1),
+            WM_TIMER => {
+                let cur = PROGRESS_PHASE.load(Ordering::Relaxed);
+                PROGRESS_PHASE.store((cur + 2) % 360, Ordering::Relaxed);
+                let _ = InvalidateRect(hwnd, None, BOOL(0));
+                LRESULT(0)
             }
-            let _ = EndPaint(hwnd, &ps);
-            LRESULT(0)
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut ps);
+                if !hdc.0.is_null() {
+                    let mut rc = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rc);
+                    let w = rc.right - rc.left;
+                    let h = rc.bottom - rc.top;
+
+                    let mem_dc = CreateCompatibleDC(hdc);
+                    let mem_bmp = CreateCompatibleBitmap(hdc, w, h);
+                    let old_bmp = SelectObject(mem_dc, HGDIOBJ(mem_bmp.0));
+
+                    // Draw sleek flat background
+                    let bg_color = if dark { 0x001C1C1C } else { 0x00E0E0E0 };
+                    let bg_brush = CreateSolidBrush(COLORREF(bg_color));
+                    let _ = FillRect(mem_dc, &rc, bg_brush);
+                    let _ = DeleteObject(HGDIOBJ(bg_brush.0));
+
+                    // Neon gradient flow bar
+                    let phase = PROGRESS_PHASE.load(Ordering::Relaxed) as f32 / 360.0;
+                    let bar_width = (w as f32 * 0.35).max(80.0) as i32;
+                    let total_travel = w + bar_width;
+                    let start_x = (total_travel as f32 * phase) as i32 - bar_width;
+
+                    for dx in 0..bar_width {
+                        let t = dx as f32 / bar_width as f32;
+                        let (r, g, b) = if dark {
+                            // Cyan (0, 240, 255) -> Purple (180, 0, 255)
+                            let r = (0.0 * (1.0 - t) + 180.0 * t) as u32;
+                            let g = (240.0 * (1.0 - t) + 0.0 * t) as u32;
+                            let b = (255.0 * (1.0 - t) + 255.0 * t) as u32;
+                            (r, g, b)
+                        } else {
+                            // Soft Blue (0, 150, 240) -> Soft Purple (160, 100, 240)
+                            let r = (0.0 * (1.0 - t) + 160.0 * t) as u32;
+                            let g = (150.0 * (1.0 - t) + 100.0 * t) as u32;
+                            let b = (240.0 * (1.0 - t) + 240.0 * t) as u32;
+                            (r, g, b)
+                        };
+                        let color = (b << 16) | (g << 8) | r;
+                        let x = start_x + dx;
+                        if x >= 0 && x < w {
+                            let col_rect = RECT {
+                                left: x,
+                                top: 0,
+                                right: x + 1,
+                                bottom: h,
+                            };
+                            let col_brush = CreateSolidBrush(COLORREF(color));
+                            let _ = FillRect(mem_dc, &col_rect, col_brush);
+                            let _ = DeleteObject(HGDIOBJ(col_brush.0));
+                        }
+                    }
+
+                    // Smooth border outline
+                    let border_color = if dark { 0x00282828 } else { 0x00CCCCCC };
+                    let border_brush = CreateSolidBrush(COLORREF(border_color));
+                    let _ = windows::Win32::Graphics::Gdi::FrameRect(mem_dc, &rc, border_brush);
+                    let _ = DeleteObject(HGDIOBJ(border_brush.0));
+
+                    let _ = windows::Win32::Graphics::Gdi::BitBlt(hdc, 0, 0, w, h, mem_dc, 0, 0, windows::Win32::Graphics::Gdi::SRCCOPY);
+
+                    let _ = SelectObject(mem_dc, old_bmp);
+                    let _ = DeleteObject(HGDIOBJ(mem_bmp.0));
+                    let _ = DeleteDC(mem_dc);
+                }
+                let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+            _ => DefSubclassProc(hwnd, msg, wparam, lparam),
         }
-        _ => DefSubclassProc(hwnd, msg, wparam, lparam),
     }
 }
 
@@ -873,7 +875,7 @@ pub fn handle_treeview_custom_draw(
     tv_hwnd: isize,
     dark: bool,
 ) -> Option<isize> {
-    use windows::Win32::Foundation::{HWND, COLORREF};
+    use windows::Win32::Foundation::COLORREF;
     use windows::Win32::UI::Controls::NMTVCUSTOMDRAW;
     use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
 

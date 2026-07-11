@@ -111,18 +111,38 @@ fn find_literal_case_insensitive(
     if line.is_ascii() && needle.is_ascii() {
         let hay = line.as_bytes();
         let needle_bytes = needle_lower.as_bytes();
-        for i in 0..=(hay.len() - nlen) {
-            let window = &hay[i..i + nlen];
-            if window
-                .iter()
-                .zip(needle_bytes.iter())
-                .all(|(a, b)| a.to_ascii_lowercase() == *b)
-            {
-                return Some(MatchHit {
-                    column_chars: i + 1,
-                    byte_start: i,
-                    byte_end: i + nlen,
-                });
+        let n = nlen;
+        let first_byte = needle_bytes[0];
+        let first_upper = first_byte.to_ascii_uppercase();
+        let use_memchr2 = first_byte != first_upper;
+
+        let mut search_pos = 0;
+        let limit = hay.len() - n;
+        while search_pos <= limit {
+            let found = if use_memchr2 {
+                memchr::memchr2(first_byte, first_upper, &hay[search_pos..=limit])
+            } else {
+                memchr::memchr(first_byte, &hay[search_pos..=limit])
+            };
+            if let Some(offset) = found {
+                let hit_idx = search_pos + offset;
+                let mut ok = true;
+                for j in 1..n {
+                    if hay[hit_idx + j].to_ascii_lowercase() != needle_bytes[j] {
+                        ok = false;
+                        break;
+                    }
+                }
+                if ok {
+                    return Some(MatchHit {
+                        column_chars: hit_idx + 1,
+                        byte_start: hit_idx,
+                        byte_end: hit_idx + n,
+                    });
+                }
+                search_pos = hit_idx + 1;
+            } else {
+                break;
             }
         }
         return None;
@@ -143,28 +163,29 @@ fn find_literal_case_insensitive_unicode(line: &str, needle_lower: &str) -> Opti
         });
     }
 
-    let line_chars: Vec<(usize, char)> = line.char_indices().collect();
-    if line_chars.len() < nlen {
-        return None;
-    }
-
-    for i in 0..=(line_chars.len() - nlen) {
+    let mut char_count = 0;
+    for (byte_idx, _) in line.char_indices() {
+        char_count += 1;
+        let mut line_iter = line[byte_idx..].chars();
         let mut matched = true;
-        for j in 0..nlen {
-            let lower: String = line_chars[i + j].1.to_lowercase().collect();
-            if lower != needle_chars[j].to_string() {
+        let mut matched_bytes = 0;
+        for &nc in &needle_chars {
+            if let Some(lc) = line_iter.next() {
+                if !lc.to_lowercase().eq(nc.to_lowercase()) {
+                    matched = false;
+                    break;
+                }
+                matched_bytes += lc.len_utf8();
+            } else {
                 matched = false;
                 break;
             }
         }
         if matched {
-            let byte_start = line_chars[i].0;
-            let last = &line_chars[i + nlen - 1];
-            let byte_end = last.0 + last.1.len_utf8();
             return Some(MatchHit {
-                column_chars: i + 1,
-                byte_start,
-                byte_end,
+                column_chars: char_count,
+                byte_start: byte_idx,
+                byte_end: byte_idx + matched_bytes,
             });
         }
     }

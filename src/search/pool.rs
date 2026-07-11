@@ -63,17 +63,11 @@ fn search_bytes(
         loop {
             let line_start = pos;
             let mut line_end = buf.len();
-            let mut found_newline = false;
 
-            for i in pos..buf.len() {
-                if buf[i] == b'\n' {
-                    line_end = i;
-                    pos = i + 1;
-                    found_newline = true;
-                    break;
-                }
-            }
-            if !found_newline {
+            if let Some(offset) = memchr::memchr(b'\n', &buf[pos..]) {
+                line_end = pos + offset;
+                pos = line_end + 1;
+            } else {
                 pos = buf.len();
             }
 
@@ -111,22 +105,38 @@ fn search_bytes(
         let nb = needle_lower_bytes.unwrap_or(needle_bytes);
         let n = nb.len();
 
-        let _finder = memmem::Finder::new(nb);
+        let first_byte = nb[0];
+        let first_upper = first_byte.to_ascii_uppercase();
+        let use_memchr2 = first_byte != first_upper;
+
         let finder_lowercase = |haystack: &[u8]| -> Option<usize> {
             if haystack.len() < n {
                 return None;
             }
-            for i in 0..=haystack.len() - n {
-                let w = &haystack[i..i + n];
-                let mut ok = true;
-                for j in 0..n {
-                    if w[j].to_ascii_lowercase() != nb[j] {
-                        ok = false;
-                        break;
+            let mut search_pos = 0;
+            let limit = haystack.len() - n;
+            while search_pos <= limit {
+                let found = if use_memchr2 {
+                    memchr::memchr2(first_byte, first_upper, &haystack[search_pos..=limit])
+                } else {
+                    memchr::memchr(first_byte, &haystack[search_pos..=limit])
+                };
+                
+                if let Some(offset) = found {
+                    let hit_idx = search_pos + offset;
+                    let mut ok = true;
+                    for j in 1..n {
+                        if haystack[hit_idx + j].to_ascii_lowercase() != nb[j] {
+                            ok = false;
+                            break;
+                        }
                     }
-                }
-                if ok {
-                    return Some(i);
+                    if ok {
+                        return Some(hit_idx);
+                    }
+                    search_pos = hit_idx + 1;
+                } else {
+                    break;
                 }
             }
             None
@@ -137,17 +147,11 @@ fn search_bytes(
         while pos < buf.len() {
             let line_start = pos;
             let mut line_end = buf.len();
-            let mut found_newline = false;
 
-            for i in pos..buf.len() {
-                if buf[i] == b'\n' {
-                    line_end = i;
-                    pos = i + 1;
-                    found_newline = true;
-                    break;
-                }
-            }
-            if !found_newline {
+            if let Some(offset) = memchr::memchr(b'\n', &buf[pos..]) {
+                line_end = pos + offset;
+                pos = line_end + 1;
+            } else {
                 pos = buf.len();
             }
 
