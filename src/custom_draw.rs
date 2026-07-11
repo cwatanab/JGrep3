@@ -1,3 +1,8 @@
+//! カスタム描画（NM_CUSTOMDRAW / WM_PAINT ハンドラ）。
+//!
+//! リストビューのグリッド線・ヘッダー背景・検索ハイライト、
+//! およびプログレスバーのアニメーション描画を担当。
+
 use crate::theme::*;
 use regex::RegexBuilder;
 

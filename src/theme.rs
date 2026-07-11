@@ -1,3 +1,8 @@
+//! カラーテーマ・ブラシ・ダークモードサポート。
+//!
+//! Windows の UxTheme / Dwm を経由したタイトルバー制御、
+//! オーナードローによるカスタムメニュー描画を含む。
+
 // Theme colors (COLORREF = 0x00BBGGRR)
 pub const CLR_DARK_BG: u32 = 0x00202020;
 pub const CLR_DARK_EDIT: u32 = 0x002D2D2D;

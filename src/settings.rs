@@ -1,3 +1,7 @@
+//! 設定ダイアログ UI。
+//!
+//! `#[derive(NwgUi)]` による宣言的レイアウト。テーマ・フォント・外部エディタ設定。
+
 use std::cell::RefCell;
 use native_windows_gui as nwg;
 use native_windows_derive::NwgUi;

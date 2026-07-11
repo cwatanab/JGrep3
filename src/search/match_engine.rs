@@ -1,3 +1,8 @@
+//! 検索マッチャ。
+//!
+//! リテラル（大小区別/無視）と正規表現に対応。
+//! ASCII リテラルは行の全小文字化を回避しバイト列比較で高速化。
+
 use regex::RegexBuilder;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

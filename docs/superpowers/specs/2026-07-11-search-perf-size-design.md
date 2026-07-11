@@ -198,3 +198,25 @@ cargo build --release
 4. 列挙を FindFirstFile 化 + バイナリスキップ
 5. ワーカプール + バッチ通知
 6. 最終ベンチとサイズ確認、必要なら追加チューニング
+
+## Appendix: 実測結果 (2026-07-11)
+
+| 指標 | Before | After | 改善率 |
+|------|--------|-------|--------|
+| バイナリサイズ | 3,050,496 bytes | 1,833,472 bytes | −40.0% |
+| 34,573ファイル 1.66Mマッチ (`fn `) | ~1,600 ms | 1,024 ms | −36% |
+| 34,573ファイル ゼロマッチ | ~1,500 ms | 516 ms | −66% |
+| テスト | — | 13 passed | — |
+
+### 実装した主な変更
+
+- リリースプロファイル: LTO + strip + opt=z + panic=abort
+- walkdir → FindFirstFileW 自前列挙
+- crossbeam-channel → std::sync::mpsc
+- パラレルワーカプール (max 8 threads)
+- memchr SIMD 高速リテラル検索
+- ASCII バイト列直接検索 (UTF-8 デコード不要)
+- バッファ再利用・バッチ通知 (32件単位)
+- トップレベルディレクトリ並列列挙 + パイプライン
+- Arc\<str\> パスキャッシュ
+- main.rs 4,231行 → 2,547行 (モジュール分割: theme, custom_draw, config, settings)

@@ -1,3 +1,9 @@
+//! ディレクトリ列挙。
+//!
+//! Win32 FindFirstFileW / FindNextFileW による再帰的ファイル収集。
+//! ファイルマスク・ディレクトリマスクによるフィルタリング。
+//! `collect_files_parallel` はトップレベルディレクトリを並列列挙する。
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;

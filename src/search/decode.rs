@@ -1,3 +1,8 @@
+//! ファイル読込・デコード・バイナリ判定。
+//!
+//! UTF-8 優先、Shift_JIS / EUC-JP へのフォールバック。
+//! NUL バイト検出によるバイナリファイルスキップ。
+
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;

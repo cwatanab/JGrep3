@@ -1,5 +1,11 @@
 #![windows_subsystem = "windows"]
 
+//! JGrep3 エントリポイント。
+//!
+//! JGrepApp は `#[derive(NwgUi)]` によるメインUI構造体。
+//! イベントハンドラ (handle_search, handle_notice, handle_resize 等) は
+//! 同一 `impl JGrepApp` ブロック内に集約。
+
 extern crate native_windows_gui as nwg;
 extern crate native_windows_derive as nwd;
 

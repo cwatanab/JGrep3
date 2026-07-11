@@ -1,3 +1,5 @@
+//! 論理ドライブ列挙とサブディレクトリ一覧取得。
+
 use std::path::{Path, PathBuf};
 use std::fs;
 use windows::Win32::Storage::FileSystem::GetLogicalDriveStringsW;

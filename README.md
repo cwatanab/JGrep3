@@ -126,10 +126,48 @@ dir_mask = []
 
 ```
 src/
-  main.rs    # UI・テーマ・設定ダイアログ
-  search.rs  # ファイル走査・マッチング
-  drives.rs  # ドライブ・フォルダ列挙
+├── main.rs            # エントリポイント・JGrepApp UI 構造・イベントハンドラ
+├── lib.rs             # クレート公開モジュール
+├── config.rs          # 設定型・保存/読込・フォント定数
+├── theme.rs           # カラー定数・ブラシ・ダークモード・メニュー描画
+├── custom_draw.rs     # カスタム描画（リストビュー・ヘッダー・プログレスバー・ハイライト）
+├── settings.rs        # 設定ダイアログ UI
+├── drives.rs          # ドライブ・フォルダ列挙
+├── search/
+│   ├── mod.rs         # 公開 API (SearchResultItem, SearchStatus, run_search)
+│   ├── glob_mask.rs   # ファイル/フォルダマスク (glob → regex)
+│   ├── match_engine.rs # マッチャ (リテラル / 正規表現 / 高速ASCIIパス)
+│   ├── decode.rs      # ファイル読込・エンコーディング判別・バイナリ検出
+│   ├── walk.rs        # ディレクトリ列挙 (Win32 FindFirstFileW)
+│   └── pool.rs        # 並列ワーカプール・進捗・バッチ通知
+└── examples/
+    └── bench_search.rs # 検索ベンチマーク CLI
 ```
+
+## パフォーマンス
+
+並列検索エンジンにより高速な全文検索を実現します。
+
+```bash
+# CLI ベンチマーク
+cargo run --release --example bench_search -- <ディレクトリ> <検索文字列> <ファイルマスク> <ディレクトリマスク>
+```
+
+参考スコア（cargo registry index: 34,573 *.rs ファイル）:
+
+| シナリオ | 時間 |
+|----------|------|
+| 1,663,714 マッチ (`fn `) | ~1.0s |
+| ゼロマッチ | ~0.5s |
+
+### 最適化手法
+
+- 並列ワーカプール（CPUスレッド数、最大8）
+- memchr SIMD による高速リテラル検索
+- ASCII バイト列直接検索（UTF-8ファイルでデコード不要）
+- ディレクトリ列挙とファイル検索のパイプライン並列化
+- バッファ再利用・バッチ通知
+- バイナリファイル早期スキップ
 
 ## 謝辞
 

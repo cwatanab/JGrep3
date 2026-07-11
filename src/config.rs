@@ -1,3 +1,8 @@
+//! 設定の定義・永続化・既定値。
+//!
+//! AppConfig は TOML 形式で `JGrep3.toml` に保存される。
+//! 読込優先: カレントディレクトリ > `%APPDATA%\JGrep3\`
+
 use native_windows_gui as nwg;
 use std::path::PathBuf;
 
