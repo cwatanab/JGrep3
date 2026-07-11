@@ -1,14 +1,15 @@
 pub mod glob_mask;
+mod match_engine;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-use regex::RegexBuilder;
 use walkdir::WalkDir;
 use encoding_rs;
 
 use glob_mask::{matches_file_masks, parse_dir_masks, parse_file_masks};
+use match_engine::Matcher;
 
 #[derive(Debug, Clone)]
 pub struct SearchResultItem {
@@ -79,13 +80,9 @@ pub fn run_search(
 ) {
     let start_time = Instant::now();
 
-    // Prepare search query regex or simple matcher
-    let query_regex = if is_regex {
-        match RegexBuilder::new(&search_query)
-            .case_insensitive(!case_sensitive)
-            .build()
-        {
-            Ok(re) => Some(re),
+    let matcher = if is_regex {
+        match Matcher::regex(&search_query, case_sensitive) {
+            Ok(m) => m,
             Err(e) => {
                 let _ = sender.send(SearchStatus::Error(format!("Invalid regex: {}", e)));
                 notice_sender.notice();
@@ -93,17 +90,14 @@ pub fn run_search(
             }
         }
     } else {
-        None
-    };
-
-    let query_literal = if !is_regex {
-        if case_sensitive {
-            Some(search_query.clone())
-        } else {
-            Some(search_query.to_lowercase())
+        match Matcher::literal(&search_query, case_sensitive) {
+            Ok(m) => m,
+            Err(e) => {
+                let _ = sender.send(SearchStatus::Error(format!("Invalid query: {}", e)));
+                notice_sender.notice();
+                return;
+            }
         }
-    } else {
-        None
     };
 
     let file_masks = match parse_file_masks(&file_mask_str) {
@@ -180,72 +174,32 @@ pub fn run_search(
             Ok(content) => {
                 let mut line_num = 1;
                 for line in content.lines() {
-                    let is_match = if let Some(ref re) = query_regex {
-                        re.is_match(line)
-                    } else if let Some(ref lit) = query_literal {
-                        if case_sensitive {
-                            line.contains(lit)
-                        } else {
-                            line.to_lowercase().contains(lit)
-                        }
-                    } else {
-                        false
-                    };
-
-                    if is_match {
+                    if let Some(hit) = matcher.find_in_line(line) {
                         match_count += 1;
+                        let column_number = hit.column_chars;
 
-                        // 1-based character column of the first match
-                        let column_number = if let Some(ref re) = query_regex {
-                            re.find(line)
-                                .map(|m| line[..m.start()].chars().count() + 1)
-                                .unwrap_or(1)
-                        } else if let Some(ref lit) = query_literal {
-                            let escaped = regex::escape(lit);
-                            RegexBuilder::new(&escaped)
-                                .case_insensitive(!case_sensitive)
-                                .build()
-                                .ok()
-                                .and_then(|re| re.find(line))
-                                .map(|m| line[..m.start()].chars().count() + 1)
-                                .unwrap_or(1)
-                        } else {
-                            1
-                        };
-                        
                         // Plain line text — UI custom-draws match highlights
                         // If the line is very long, extract context around the match to make it visible in UI.
                         let line_trimmed = line.trim();
                         let max_len = 120;
                         let line_content = if line_trimmed.chars().count() > max_len {
-                            let query_lower = search_query.to_lowercase();
-                            let trimmed_lower = line_trimmed.to_lowercase();
-                            let match_char_idx = if is_regex {
-                                if let Some(ref re) = query_regex {
-                                    re.find(&line_trimmed)
-                                        .map(|m| line_trimmed[..m.start()].chars().count())
-                                        .unwrap_or(0)
-                                } else {
-                                    0
-                                }
-                            } else {
-                                trimmed_lower.find(&query_lower)
-                                    .map(|bytes_idx| line_trimmed[..bytes_idx].chars().count())
-                                    .unwrap_or(0)
-                            };
+                            let match_char_idx = matcher
+                                .find_in_line(line_trimmed)
+                                .map(|h| h.column_chars.saturating_sub(1))
+                                .unwrap_or(0);
 
                             let chars: Vec<char> = line_trimmed.chars().collect();
                             let total_chars = chars.len();
                             let context_before = 40;
                             let context_after = 60;
-                            
+
                             let start = if match_char_idx > context_before {
                                 match_char_idx - context_before
                             } else {
                                 0
                             };
                             let end = (match_char_idx + context_after).min(total_chars);
-                            
+
                             let mut truncated = String::new();
                             if start > 0 {
                                 truncated.push_str("...");
