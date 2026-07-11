@@ -1,13 +1,14 @@
 pub mod glob_mask;
+mod decode;
 mod match_engine;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use walkdir::WalkDir;
-use encoding_rs;
 
+use decode::read_and_decode_file;
 use glob_mask::{matches_file_masks, parse_dir_masks, parse_file_masks};
 use match_engine::Matcher;
 
@@ -25,44 +26,6 @@ pub enum SearchStatus {
     Progress { scanned_files: usize },
     Completed { elapsed_ms: u64, total_scanned: usize, match_count: usize },
     Error(String),
-}
-
-// Helper to read file and decode into String with SJS/EUC-JP fallbacks
-pub fn read_and_decode_file(path: &Path, auto_detect: bool) -> Result<String, std::io::Error> {
-    use std::fs::File;
-    use std::io::Read;
-
-    let mut file = File::open(path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-
-    if auto_detect {
-        // Try UTF-8 first
-        if let Ok(s) = std::str::from_utf8(&buffer) {
-            return Ok(s.to_string());
-        }
-        // Check for UTF-8 BOM
-        if buffer.starts_with(&[0xEF, 0xBB, 0xBF]) {
-            if let Ok(s) = std::str::from_utf8(&buffer[3..]) {
-                return Ok(s.to_string());
-            }
-        }
-        // Fallback to Shift_JIS (Japanese Windows default)
-        let (res, _encoding, has_errors) = encoding_rs::SHIFT_JIS.decode(&buffer);
-        if !has_errors {
-            return Ok(res.into_owned());
-        }
-        // Fallback to EUC-JP
-        let (res, _encoding, has_errors) = encoding_rs::EUC_JP.decode(&buffer);
-        if !has_errors {
-            return Ok(res.into_owned());
-        }
-        // Last resort: UTF-8 lossy
-        Ok(String::from_utf8_lossy(&buffer).into_owned())
-    } else {
-        // Default decoding: UTF-8 lossy
-        Ok(String::from_utf8_lossy(&buffer).into_owned())
-    }
 }
 
 pub fn run_search(
@@ -170,64 +133,62 @@ pub fn run_search(
         }
 
         // Read and search inside file
-        match read_and_decode_file(path, auto_detect_encoding) {
-            Ok(content) => {
-                let mut line_num = 1;
-                for line in content.lines() {
-                    if let Some(hit) = matcher.find_in_line(line) {
-                        match_count += 1;
-                        let column_number = hit.column_chars;
+        let content = match read_and_decode_file(path, auto_detect_encoding) {
+            Ok(Some(c)) => c,
+            Ok(None) | Err(_) => continue,
+        };
 
-                        // Plain line text — UI custom-draws match highlights
-                        // If the line is very long, extract context around the match to make it visible in UI.
-                        let line_trimmed = line.trim();
-                        let max_len = 120;
-                        let line_content = if line_trimmed.chars().count() > max_len {
-                            let match_char_idx = matcher
-                                .find_in_line(line_trimmed)
-                                .map(|h| h.column_chars.saturating_sub(1))
-                                .unwrap_or(0);
+        let mut line_num = 1;
+        for line in content.lines() {
+            if let Some(hit) = matcher.find_in_line(line) {
+                match_count += 1;
+                let column_number = hit.column_chars;
 
-                            let chars: Vec<char> = line_trimmed.chars().collect();
-                            let total_chars = chars.len();
-                            let context_before = 40;
-                            let context_after = 60;
+                // Plain line text — UI custom-draws match highlights
+                // If the line is very long, extract context around the match to make it visible in UI.
+                let line_trimmed = line.trim();
+                let max_len = 120;
+                let line_content = if line_trimmed.chars().count() > max_len {
+                    let match_char_idx = matcher
+                        .find_in_line(line_trimmed)
+                        .map(|h| h.column_chars.saturating_sub(1))
+                        .unwrap_or(0);
 
-                            let start = if match_char_idx > context_before {
-                                match_char_idx - context_before
-                            } else {
-                                0
-                            };
-                            let end = (match_char_idx + context_after).min(total_chars);
+                    let chars: Vec<char> = line_trimmed.chars().collect();
+                    let total_chars = chars.len();
+                    let context_before = 40;
+                    let context_after = 60;
 
-                            let mut truncated = String::new();
-                            if start > 0 {
-                                truncated.push_str("...");
-                            }
-                            truncated.push_str(&chars[start..end].iter().collect::<String>());
-                            if end < total_chars {
-                                truncated.push_str("...");
-                            }
-                            truncated
-                        } else {
-                            line_trimmed.to_string()
-                        };
+                    let start = if match_char_idx > context_before {
+                        match_char_idx - context_before
+                    } else {
+                        0
+                    };
+                    let end = (match_char_idx + context_after).min(total_chars);
 
-                        let item = SearchResultItem {
-                            file_path: path.to_string_lossy().to_string(),
-                            line_number: line_num,
-                            column_number,
-                            line_content,
-                        };
-                        let _ = sender.send(SearchStatus::Match(item));
-                        notice_sender.notice();
+                    let mut truncated = String::new();
+                    if start > 0 {
+                        truncated.push_str("...");
                     }
-                    line_num += 1;
-                }
+                    truncated.push_str(&chars[start..end].iter().collect::<String>());
+                    if end < total_chars {
+                        truncated.push_str("...");
+                    }
+                    truncated
+                } else {
+                    line_trimmed.to_string()
+                };
+
+                let item = SearchResultItem {
+                    file_path: path.to_string_lossy().to_string(),
+                    line_number: line_num,
+                    column_number,
+                    line_content,
+                };
+                let _ = sender.send(SearchStatus::Match(item));
+                notice_sender.notice();
             }
-            Err(_) => {
-                // Silently skip files that fail to read (locked files, system files, etc.)
-            }
+            line_num += 1;
         }
     }
 
