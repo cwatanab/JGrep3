@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crossbeam_channel::Receiver;
+use std::sync::mpsc::{self, Receiver};
 use settings_dialog_ui::SettingsDialogUi;
 
 use regex::RegexBuilder;
@@ -3439,7 +3439,7 @@ impl JGrepApp {
 
         // Spin up background thread
         let cancel_token = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (tx, rx) = mpsc::channel();
         let notice_sender = self.search_notice.sender();
 
         let cancel_token_clone = cancel_token.clone();
@@ -3506,77 +3506,80 @@ impl JGrepApp {
     }
 
     fn handle_notice(&self) {
-        let rx = {
-            let state = self.search_state.borrow();
-            state.as_ref().map(|s| s.receiver.clone())
-        };
+        let mut drained = Vec::new();
+        {
+            let mut state = self.search_state.borrow_mut();
+            if let Some(s) = state.as_mut() {
+                while let Ok(status) = s.receiver.try_recv() {
+                    drained.push(status);
+                }
+            }
+        }
 
-        if let Some(rx) = rx {
-            while let Ok(status) = rx.try_recv() {
-                match status {
-                    SearchStatus::Match(item) => {
-                        // Store memory copy for sorting
-                        self.search_results.borrow_mut().push(item.clone());
+        for status in drained {
+            match status {
+                SearchStatus::Match(item) => {
+                    // Store memory copy for sorting
+                    self.search_results.borrow_mut().push(item.clone());
 
-                        let idx = self.list_view.len();
-                        self.list_view.insert_item(nwg::InsertListViewItem {
-                            index: Some(idx as i32),
-                            column_index: 0,
-                            text: Some(item.file_path.clone()),
-                            image: None,
-                        });
-                        self.list_view.update_item(idx, nwg::InsertListViewItem {
-                            index: Some(idx as i32),
-                            column_index: 1,
-                            text: Some(item.line_number.to_string()),
-                            image: None,
-                        });
-                        self.list_view.update_item(idx, nwg::InsertListViewItem {
-                            index: Some(idx as i32),
-                            column_index: 2,
-                            text: Some(item.line_content),
-                            image: None,
-                        });
+                    let idx = self.list_view.len();
+                    self.list_view.insert_item(nwg::InsertListViewItem {
+                        index: Some(idx as i32),
+                        column_index: 0,
+                        text: Some(item.file_path.clone()),
+                        image: None,
+                    });
+                    self.list_view.update_item(idx, nwg::InsertListViewItem {
+                        index: Some(idx as i32),
+                        column_index: 1,
+                        text: Some(item.line_number.to_string()),
+                        image: None,
+                    });
+                    self.list_view.update_item(idx, nwg::InsertListViewItem {
+                        index: Some(idx as i32),
+                        column_index: 2,
+                        text: Some(item.line_content),
+                        image: None,
+                    });
 
-                        self.result_file_map.borrow_mut().insert(idx, (item.file_path, item.line_number, item.column_number));
-                    }
-                    SearchStatus::Progress { scanned_files } => {
-                        self.status_bar.set_text(0, &format!("検索中... (走査済みファイル数: {})", scanned_files));
-                    }
-                    SearchStatus::Completed { elapsed_ms, total_scanned, match_count } => {
-                        let elapsed_sec = elapsed_ms as f64 / 1000.0;
-                        self.status_bar.set_text(0, &format!("検索完了。{} 個のマッチ (走査: {}, 時間: {:.3}秒)", match_count, total_scanned, elapsed_sec));
-                        self.set_ui_searching_state(false);
-                        *self.search_state.borrow_mut() = None;
+                    self.result_file_map.borrow_mut().insert(idx, (item.file_path, item.line_number, item.column_number));
+                }
+                SearchStatus::Progress { scanned_files } => {
+                    self.status_bar.set_text(0, &format!("検索中... (走査済みファイル数: {})", scanned_files));
+                }
+                SearchStatus::Completed { elapsed_ms, total_scanned, match_count } => {
+                    let elapsed_sec = elapsed_ms as f64 / 1000.0;
+                    self.status_bar.set_text(0, &format!("検索完了。{} 個のマッチ (走査: {}, 時間: {:.3}秒)", match_count, total_scanned, elapsed_sec));
+                    self.set_ui_searching_state(false);
+                    *self.search_state.borrow_mut() = None;
 
-                        // Hide progress bar & stop timer animation
-                        if let Some(pb_hwnd) = self.progress_bar.handle.hwnd() {
-                            unsafe {
-                                use windows::Win32::UI::WindowsAndMessaging::KillTimer;
-                                use windows::Win32::Foundation::HWND;
-                                let _ = KillTimer(HWND(pb_hwnd as _), 1);
-                            }
+                    // Hide progress bar & stop timer animation
+                    if let Some(pb_hwnd) = self.progress_bar.handle.hwnd() {
+                        unsafe {
+                            use windows::Win32::UI::WindowsAndMessaging::KillTimer;
+                            use windows::Win32::Foundation::HWND;
+                            let _ = KillTimer(HWND(pb_hwnd as _), 1);
                         }
-                        self.progress_bar.set_visible(false);
-                        self.stretch_list_columns();
                     }
-                    SearchStatus::Error(err) => {
-                        nwg::simple_message("検索エラー", &err);
-                        self.status_bar.set_text(0, "エラーにより検索を中止しました。");
-                        self.set_ui_searching_state(false);
-                        *self.search_state.borrow_mut() = None;
+                    self.progress_bar.set_visible(false);
+                    self.stretch_list_columns();
+                }
+                SearchStatus::Error(err) => {
+                    nwg::simple_message("検索エラー", &err);
+                    self.status_bar.set_text(0, "エラーにより検索を中止しました。");
+                    self.set_ui_searching_state(false);
+                    *self.search_state.borrow_mut() = None;
 
-                        // Hide progress bar & stop timer animation
-                        if let Some(pb_hwnd) = self.progress_bar.handle.hwnd() {
-                            unsafe {
-                                use windows::Win32::UI::WindowsAndMessaging::KillTimer;
-                                use windows::Win32::Foundation::HWND;
-                                let _ = KillTimer(HWND(pb_hwnd as _), 1);
-                            }
+                    // Hide progress bar & stop timer animation
+                    if let Some(pb_hwnd) = self.progress_bar.handle.hwnd() {
+                        unsafe {
+                            use windows::Win32::UI::WindowsAndMessaging::KillTimer;
+                            use windows::Win32::Foundation::HWND;
+                            let _ = KillTimer(HWND(pb_hwnd as _), 1);
                         }
-                        self.progress_bar.set_visible(false);
-                        self.stretch_list_columns();
                     }
+                    self.progress_bar.set_visible(false);
+                    self.stretch_list_columns();
                 }
             }
         }
