@@ -258,28 +258,57 @@ pub fn run_search(
                             1
                         };
                         
-                        // Highlight the matched query in content using closure replace
-                        let mut highlighted_content = line.trim().to_string();
-                        if is_regex {
-                            if let Some(ref re) = query_regex {
-                                highlighted_content = re.replace_all(&highlighted_content, |caps: &regex::Captures| {
-                                    format!("【{}】", &caps[0])
-                                }).to_string();
+                        // Plain line text — UI custom-draws match highlights
+                        // If the line is very long, extract context around the match to make it visible in UI.
+                        let line_trimmed = line.trim();
+                        let max_len = 120;
+                        let line_content = if line_trimmed.chars().count() > max_len {
+                            let query_lower = search_query.to_lowercase();
+                            let trimmed_lower = line_trimmed.to_lowercase();
+                            let match_char_idx = if is_regex {
+                                if let Some(ref re) = query_regex {
+                                    re.find(&line_trimmed)
+                                        .map(|m| line_trimmed[..m.start()].chars().count())
+                                        .unwrap_or(0)
+                                } else {
+                                    0
+                                }
+                            } else {
+                                trimmed_lower.find(&query_lower)
+                                    .map(|bytes_idx| line_trimmed[..bytes_idx].chars().count())
+                                    .unwrap_or(0)
+                            };
+
+                            let chars: Vec<char> = line_trimmed.chars().collect();
+                            let total_chars = chars.len();
+                            let context_before = 40;
+                            let context_after = 60;
+                            
+                            let start = if match_char_idx > context_before {
+                                match_char_idx - context_before
+                            } else {
+                                0
+                            };
+                            let end = (match_char_idx + context_after).min(total_chars);
+                            
+                            let mut truncated = String::new();
+                            if start > 0 {
+                                truncated.push_str("...");
                             }
-                        } else if let Some(ref lit) = query_literal {
-                            let escaped = regex::escape(lit);
-                            if let Ok(re) = RegexBuilder::new(&escaped).case_insensitive(!case_sensitive).build() {
-                                highlighted_content = re.replace_all(&highlighted_content, |caps: &regex::Captures| {
-                                    format!("【{}】", &caps[0])
-                                }).to_string();
+                            truncated.push_str(&chars[start..end].iter().collect::<String>());
+                            if end < total_chars {
+                                truncated.push_str("...");
                             }
-                        }
+                            truncated
+                        } else {
+                            line_trimmed.to_string()
+                        };
 
                         let item = SearchResultItem {
                             file_path: path.to_string_lossy().to_string(),
                             line_number: line_num,
                             column_number,
-                            line_content: highlighted_content,
+                            line_content,
                         };
                         let _ = sender.send(SearchStatus::Match(item));
                         notice_sender.notice();

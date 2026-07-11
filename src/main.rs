@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crossbeam_channel::Receiver;
 use settings_dialog_ui::SettingsDialogUi;
 
+use regex::RegexBuilder;
 use search::SearchStatus;
 
 pub struct SearchState {
@@ -282,13 +283,147 @@ fn uah_draw_menu_nc_bottom_line(hwnd: windows::Win32::Foundation::HWND, dark: bo
 
         let client_top_in_window = pt.y - rc_window.top;
 
-        let mut rc_line = rc_client;
-        rc_line.bottom = client_top_in_window;
-        rc_line.top = client_top_in_window - 1;
+        let client_left_in_window = pt.x - rc_window.left;
+        let rc_line = RECT {
+            left: client_left_in_window,
+            right: client_left_in_window + rc_client.right,
+            top: client_top_in_window - 1,
+            bottom: client_top_in_window,
+        };
 
         let hdc = GetWindowDC(hwnd);
         let _ = FillRect(hdc, &rc_line, brushes.bg(true));
         let _ = ReleaseDC(hwnd, hdc);
+    }
+}
+
+static PROGRESS_PHASE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+#[link(name = "comctl32")]
+unsafe extern "system" {
+    fn SetWindowSubclass(
+        hWnd: windows::Win32::Foundation::HWND,
+        pfnSubclass: unsafe extern "system" fn(
+            windows::Win32::Foundation::HWND,
+            u32,
+            windows::Win32::Foundation::WPARAM,
+            windows::Win32::Foundation::LPARAM,
+            usize,
+            usize,
+        ) -> windows::Win32::Foundation::LRESULT,
+        uIdSubclass: usize,
+        dwRefData: usize,
+    ) -> windows::Win32::Foundation::BOOL;
+
+    fn DefSubclassProc(
+        hWnd: windows::Win32::Foundation::HWND,
+        uMsg: u32,
+        wParam: windows::Win32::Foundation::WPARAM,
+        lParam: windows::Win32::Foundation::LPARAM,
+    ) -> windows::Win32::Foundation::LRESULT;
+}
+
+unsafe extern "system" fn progress_bar_subclass_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    _id: usize,
+    ref_data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Foundation::{LRESULT, RECT, COLORREF, BOOL};
+    use windows::Win32::Graphics::Gdi::{
+        BeginPaint, EndPaint, CreateCompatibleDC, CreateCompatibleBitmap, SelectObject, DeleteDC,
+        DeleteObject, FillRect, CreateSolidBrush, PAINTSTRUCT, HGDIOBJ, InvalidateRect,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+    use std::sync::atomic::Ordering;
+
+    const WM_PAINT: u32 = 0x000F;
+    const WM_TIMER: u32 = 0x0113;
+    const WM_ERASEBKGND: u32 = 0x0014;
+
+    let dark = ref_data != 0;
+
+    match msg {
+        WM_ERASEBKGND => LRESULT(1),
+        WM_TIMER => {
+            let cur = PROGRESS_PHASE.load(Ordering::Relaxed);
+            PROGRESS_PHASE.store((cur + 2) % 360, Ordering::Relaxed);
+            let _ = InvalidateRect(hwnd, None, BOOL(0));
+            LRESULT(0)
+        }
+        WM_PAINT => {
+            let mut ps = PAINTSTRUCT::default();
+            let hdc = BeginPaint(hwnd, &mut ps);
+            if !hdc.0.is_null() {
+                let mut rc = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rc);
+                let w = rc.right - rc.left;
+                let h = rc.bottom - rc.top;
+
+                let mem_dc = CreateCompatibleDC(hdc);
+                let mem_bmp = CreateCompatibleBitmap(hdc, w, h);
+                let old_bmp = SelectObject(mem_dc, HGDIOBJ(mem_bmp.0));
+
+                // Draw sleek flat background
+                let bg_color = if dark { 0x001C1C1C } else { 0x00E0E0E0 };
+                let bg_brush = CreateSolidBrush(COLORREF(bg_color));
+                let _ = FillRect(mem_dc, &rc, bg_brush);
+                let _ = DeleteObject(HGDIOBJ(bg_brush.0));
+
+                // Neon gradient flow bar
+                let phase = PROGRESS_PHASE.load(Ordering::Relaxed) as f32 / 360.0;
+                let bar_width = (w as f32 * 0.35).max(80.0) as i32;
+                let total_travel = w + bar_width;
+                let start_x = (total_travel as f32 * phase) as i32 - bar_width;
+
+                for dx in 0..bar_width {
+                    let t = dx as f32 / bar_width as f32;
+                    let (r, g, b) = if dark {
+                        // Cyan (0, 240, 255) -> Purple (180, 0, 255)
+                        let r = (0.0 * (1.0 - t) + 180.0 * t) as u32;
+                        let g = (240.0 * (1.0 - t) + 0.0 * t) as u32;
+                        let b = (255.0 * (1.0 - t) + 255.0 * t) as u32;
+                        (r, g, b)
+                    } else {
+                        // Soft Blue (0, 150, 240) -> Soft Purple (160, 100, 240)
+                        let r = (0.0 * (1.0 - t) + 160.0 * t) as u32;
+                        let g = (150.0 * (1.0 - t) + 100.0 * t) as u32;
+                        let b = (240.0 * (1.0 - t) + 240.0 * t) as u32;
+                        (r, g, b)
+                    };
+                    let color = (b << 16) | (g << 8) | r;
+                    let x = start_x + dx;
+                    if x >= 0 && x < w {
+                        let col_rect = RECT {
+                            left: x,
+                            top: 0,
+                            right: x + 1,
+                            bottom: h,
+                        };
+                        let col_brush = CreateSolidBrush(COLORREF(color));
+                        let _ = FillRect(mem_dc, &col_rect, col_brush);
+                        let _ = DeleteObject(HGDIOBJ(col_brush.0));
+                    }
+                }
+
+                // Smooth border outline
+                let border_color = if dark { 0x00282828 } else { 0x00CCCCCC };
+                let border_brush = CreateSolidBrush(COLORREF(border_color));
+                let _ = windows::Win32::Graphics::Gdi::FrameRect(mem_dc, &rc, border_brush);
+                let _ = DeleteObject(HGDIOBJ(border_brush.0));
+
+                let _ = windows::Win32::Graphics::Gdi::BitBlt(hdc, 0, 0, w, h, mem_dc, 0, 0, windows::Win32::Graphics::Gdi::SRCCOPY);
+
+                let _ = SelectObject(mem_dc, old_bmp);
+                let _ = DeleteObject(HGDIOBJ(mem_bmp.0));
+                let _ = DeleteDC(mem_dc);
+            }
+            let _ = EndPaint(hwnd, &ps);
+            LRESULT(0)
+        }
+        _ => DefSubclassProc(hwnd, msg, wparam, lparam),
     }
 }
 
@@ -320,6 +455,7 @@ fn handle_header_custom_draw(lparam: isize, header_hwnd: isize, dark: bool) -> O
     const CDRF_NOTIFYITEMDRAW: isize = 0x00000020;
     const CDRF_DODEFAULT: isize = 0x00000000;
     const CDRF_SKIPDEFAULT: isize = 0x00000004;
+    const CDRF_NOTIFYPOSTPAINT: isize = 0x00000010;
 
     let nm = lparam as *const NmCustomDraw;
     if nm.is_null() {
@@ -331,7 +467,7 @@ fn handle_header_custom_draw(lparam: isize, header_hwnd: isize, dark: bool) -> O
     }
 
     let (fg, bg) = if dark {
-        (CLR_DARK_FG, CLR_DARK_EDIT) // slightly lighter than body for header
+        (CLR_DARK_FG, CLR_DARK_BG) // Match body background for seamless visual flow
     } else {
         (CLR_LIGHT_FG, CLR_LIGHT_BG)
     };
@@ -345,7 +481,37 @@ fn handle_header_custom_draw(lparam: isize, header_hwnd: isize, dark: bool) -> O
                 let _ = FillRect(hdc, &cd.rc, brush);
                 let _ = windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(brush.0));
             }
-            Some(CDRF_NOTIFYITEMDRAW)
+            Some(CDRF_NOTIFYITEMDRAW | CDRF_NOTIFYPOSTPAINT)
+        }
+        s if s == 0x00000002 => { // CDDS_POSTPAINT
+            let hdc = HDC(cd.hdc as _);
+            unsafe {
+                use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+                use windows::Win32::Foundation::{WPARAM, LPARAM, HWND, RECT};
+                let mut last_item_rc = RECT::default();
+                // Send HDM_GETITEMRECT for index 2 (last column) to get its right-most position
+                let res = SendMessageW(
+                    HWND(header_hwnd as _),
+                    0x1200 + 7, // HDM_GETITEMRECT
+                    WPARAM(2),
+                    LPARAM(&mut last_item_rc as *mut _ as isize),
+                );
+                if res.0 != 0 {
+                    let right_limit = last_item_rc.right;
+                    if right_limit < cd.rc.right {
+                        let spacer_rc = RECT {
+                            left: right_limit,
+                            top: cd.rc.top,
+                            right: cd.rc.right,
+                            bottom: cd.rc.bottom,
+                        };
+                        let brush = windows::Win32::Graphics::Gdi::CreateSolidBrush(COLORREF(bg));
+                        let _ = FillRect(hdc, &spacer_rc, brush);
+                        let _ = windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(brush.0));
+                    }
+                }
+            }
+            Some(CDRF_DODEFAULT)
         }
         CDDS_ITEMPREPAINT => {
             let hdc = HDC(cd.hdc as _);
@@ -355,13 +521,21 @@ fn handle_header_custom_draw(lparam: isize, header_hwnd: isize, dark: bool) -> O
                 let _ = FillRect(hdc, &cd.rc, brush);
                 let _ = windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(brush.0));
 
+                // If this is a placeholder / empty spacer item beyond the 3 main columns,
+                // do not draw any borders or retrieve text. Just skip default to prevent extra line artifacts.
+                if cd.dw_item_spec > 2 {
+                    return Some(CDRF_DODEFAULT);
+                }
+
                 // Draw border line (right & bottom separators)
                 let border_color = if dark { 0x00404040 } else { 0x00D0D0D0 };
                 let pen = windows::Win32::Graphics::Gdi::CreatePen(windows::Win32::Graphics::Gdi::PS_SOLID, 1, COLORREF(border_color));
                 let old_pen = windows::Win32::Graphics::Gdi::SelectObject(hdc, windows::Win32::Graphics::Gdi::HGDIOBJ(pen.0));
 
-                let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc, cd.rc.right - 1, cd.rc.top, None);
-                let _ = windows::Win32::Graphics::Gdi::LineTo(hdc, cd.rc.right - 1, cd.rc.bottom);
+                if cd.dw_item_spec < 2 {
+                    let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc, cd.rc.right - 1, cd.rc.top, None);
+                    let _ = windows::Win32::Graphics::Gdi::LineTo(hdc, cd.rc.right - 1, cd.rc.bottom);
+                }
 
                 let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc, cd.rc.left, cd.rc.bottom - 1, None);
                 let _ = windows::Win32::Graphics::Gdi::LineTo(hdc, cd.rc.right, cd.rc.bottom - 1);
@@ -413,66 +587,438 @@ fn handle_header_custom_draw(lparam: isize, header_hwnd: isize, dark: bool) -> O
     }
 }
 
-/// ListView NM_CUSTOMDRAW: request post-paint and draw dark grid lines.
-fn handle_listview_custom_draw(lparam: isize, lv_hwnd: isize, dark: bool) -> Option<isize> {
-    use windows::Win32::Foundation::{HWND, RECT, LPARAM, WPARAM};
+/// Highlight settings for result list content column
+#[derive(Clone)]
+struct HighlightState {
+    pattern: String,
+    case_sensitive: bool,
+    is_regex: bool,
+}
+
+fn find_highlight_ranges(text: &str, hl: &HighlightState) -> Vec<(usize, usize)> {
+    if hl.pattern.is_empty() {
+        return Vec::new();
+    }
+    let re = if hl.is_regex {
+        RegexBuilder::new(&hl.pattern)
+            .case_insensitive(!hl.case_sensitive)
+            .build()
+            .ok()
+    } else {
+        RegexBuilder::new(&regex::escape(&hl.pattern))
+            .case_insensitive(!hl.case_sensitive)
+            .build()
+            .ok()
+    };
+    match re {
+        Some(re) => re.find_iter(text).map(|m| (m.start(), m.end())).collect(),
+        None => Vec::new(),
+    }
+}
+
+fn draw_postpaint_highlights(
+    hdc: windows::Win32::Graphics::Gdi::HDC,
+    text: &str,
+    ranges: &[(usize, usize)],
+    rc: &windows::Win32::Foundation::RECT,
+    dark: bool,
+    _selected: bool,
+) {
+    use windows::Win32::Foundation::{COLORREF, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        ExtTextOutW, GetTextExtentPoint32W, SetBkColor, SetBkMode, SetTextColor, OPAQUE,
+    };
+    use windows::core::PCWSTR;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ffi::OsStr;
+
+    // Highlight colors (BGR representation)
+    let (hl_fg, hl_bg) = if dark {
+        (0x00000000, 0x0000D7FF) // black on gold
+    } else {
+        (0x00000000, 0x0080FFFF) // black on bright yellow
+    };
+
+    unsafe {
+        let _ = SetBkMode(hdc, OPAQUE);
+        let _ = SetTextColor(hdc, COLORREF(hl_fg));
+        let _ = SetBkColor(hdc, COLORREF(hl_bg));
+
+
+        
+        let start_x = rc.left + 4; // Native ListView text margin
+        let y = rc.top + 2;
+
+        for &(s, e) in ranges {
+            if s >= text.len() || e > text.len() || s >= e {
+                continue;
+            }
+
+            let prefix = &text[..s];
+            let wide_prefix: Vec<u16> = OsStr::new(prefix).encode_wide().collect();
+            let mut prefix_size = windows::Win32::Foundation::SIZE::default();
+            let _ = GetTextExtentPoint32W(hdc, &wide_prefix, &mut prefix_size);
+            
+            let match_text = &text[s..e];
+            let wide_match: Vec<u16> = OsStr::new(match_text).encode_wide().collect();
+            let mut match_size = windows::Win32::Foundation::SIZE::default();
+            let _ = GetTextExtentPoint32W(hdc, &wide_match, &mut match_size);
+
+            let segment_x = start_x + prefix_size.cx;
+
+            let out_rc = RECT {
+                left: segment_x,
+                top: rc.top,
+                right: segment_x + match_size.cx,
+                bottom: rc.bottom,
+            };
+
+            let _ = ExtTextOutW(
+                hdc,
+                segment_x,
+                y,
+                windows::Win32::Graphics::Gdi::ETO_CLIPPED | windows::Win32::Graphics::Gdi::ETO_OPAQUE,
+                Some(&out_rc),
+                PCWSTR(wide_match.as_ptr()),
+                wide_match.len() as u32,
+                None,
+            );
+        }
+    }
+}
+
+fn lv_get_subitem_text(lv_hwnd: isize, item: i32, subitem: i32) -> String {
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+    // LVITEMW partial for LVM_GETITEMTEXTW
+    #[repr(C)]
+    struct LvItemW {
+        mask: u32,
+        i_item: i32,
+        i_sub_item: i32,
+        state: u32,
+        state_mask: u32,
+        psz_text: windows::core::PWSTR,
+        cch_text_max: i32,
+        i_image: i32,
+        l_param: isize,
+        i_indent: i32,
+        i_group_id: i32,
+        c_columns: u32,
+        pu_columns: *mut u32,
+        pi_col_fmt: *mut i32,
+        i_group: i32,
+    }
+    let mut buf = vec![0u16; 1024];
+    let mut lv = LvItemW {
+        mask: 0x0001, // LVIF_TEXT
+        i_item: item,
+        i_sub_item: subitem,
+        state: 0,
+        state_mask: 0,
+        psz_text: windows::core::PWSTR(buf.as_mut_ptr()),
+        cch_text_max: buf.len() as i32,
+        i_image: 0,
+        l_param: 0,
+        i_indent: 0,
+        i_group_id: 0,
+        c_columns: 0,
+        pu_columns: std::ptr::null_mut(),
+        pi_col_fmt: std::ptr::null_mut(),
+        i_group: 0,
+    };
+    unsafe {
+        let _ = SendMessageW(
+            HWND(lv_hwnd as _),
+            0x1000 + 115, // LVM_GETITEMTEXTW = 0x1073
+            WPARAM(item as usize),
+            LPARAM(&mut lv as *mut LvItemW as isize),
+        );
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        String::from_utf16_lossy(&buf[..len])
+    }
+}
+
+fn draw_highlighted_text(
+    hdc: windows::Win32::Graphics::Gdi::HDC,
+    text: &str,
+    ranges: &[(usize, usize)],
+    rc: &windows::Win32::Foundation::RECT,
+    dark: bool,
+    selected: bool,
+    lv_hwnd: isize,
+    align_right: bool,
+) {
+    use windows::Win32::Foundation::{COLORREF, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        CreateSolidBrush, DeleteObject, ExtTextOutW, FillRect, GetTextExtentPoint32W, SetBkColor,
+        SetBkMode, SetTextColor, ETO_CLIPPED, ETO_OPAQUE, HGDIOBJ, OPAQUE,
+    };
+    use windows::core::PCWSTR;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ffi::OsStr;
+
+    let (fg, bg) = if selected {
+        unsafe {
+            use windows::Win32::Graphics::Gdi::{
+                GetSysColor, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_BTNFACE, COLOR_BTNTEXT,
+            };
+            use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+
+            let has_focus = GetFocus().0 as isize == lv_hwnd;
+            if has_focus {
+                (
+                    GetSysColor(COLOR_HIGHLIGHTTEXT),
+                    GetSysColor(COLOR_HIGHLIGHT),
+                )
+            } else if dark {
+                (
+                    CLR_DARK_FG,
+                    0x003F3F3F, // Match Explorer's inactive selection gray in dark mode
+                )
+            } else {
+                (
+                    GetSysColor(COLOR_BTNTEXT),
+                    GetSysColor(COLOR_BTNFACE),
+                )
+            }
+        }
+    } else if dark {
+        (CLR_DARK_FG, CLR_DARK_BG)
+    } else {
+        (CLR_LIGHT_FG, CLR_LIGHT_BG)
+    };
+    // Highlight colors (BGR)
+    let (hl_fg, hl_bg) = if dark {
+        (0x00000000, 0x0000D7FF) // black on gold
+    } else {
+        (0x00000000, 0x0080FFFF) // black on light yellow
+    };
+
+    let mut theme_drawn = false;
+    if selected {
+        use windows::core::HRESULT;
+        use windows::core::w;
+
+        #[link(name = "uxtheme")]
+        unsafe extern "system" {
+            fn OpenThemeData(hwnd: windows::Win32::Foundation::HWND, pszClassList: windows::core::PCWSTR) -> isize;
+            fn CloseThemeData(hTheme: isize) -> HRESULT;
+            fn DrawThemeBackground(
+                hTheme: isize,
+                hdc: windows::Win32::Graphics::Gdi::HDC,
+                iPartId: i32,
+                iStateId: i32,
+                pRect: *const RECT,
+                pClipRect: *const RECT,
+            ) -> HRESULT;
+        }
+
+        unsafe {
+            use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+            let has_focus = GetFocus().0 as isize == lv_hwnd;
+            let htheme = OpenThemeData(windows::Win32::Foundation::HWND(lv_hwnd as _), w!("LISTVIEW"));
+            if htheme != 0 {
+                // LVP_LISTITEM = 1
+                // Active selected: LVIS_SELECTED = 3
+                // Inactive selected: LVIS_SELECTEDNOTFOCUS = 5
+                let state = if has_focus { 3 } else { 5 };
+                let _ = DrawThemeBackground(htheme, hdc, 1, state, rc, std::ptr::null());
+                let _ = CloseThemeData(htheme);
+                theme_drawn = true;
+            }
+        }
+    }
+
+    unsafe {
+        if !theme_drawn {
+            let brush = CreateSolidBrush(COLORREF(bg));
+            let _ = FillRect(hdc, rc, brush);
+            let _ = DeleteObject(HGDIOBJ(brush.0));
+        }
+        let _ = SetBkMode(hdc, OPAQUE);
+
+        let mut x = if align_right {
+            let wide_all: Vec<u16> = OsStr::new(text).encode_wide().collect();
+            let mut size_all = windows::Win32::Foundation::SIZE::default();
+            let _ = GetTextExtentPoint32W(hdc, &wide_all, &mut size_all);
+            rc.right - size_all.cx - 6
+        } else {
+            rc.left + 4
+        };
+        let y = rc.top + 2;
+        let mut pos = 0usize;
+        let mut segments: Vec<(usize, usize, bool)> = Vec::new();
+        for &(s, e) in ranges {
+            if s >= text.len() || e > text.len() || s >= e {
+                continue;
+            }
+            if pos < s {
+                segments.push((pos, s, false));
+            }
+            segments.push((s, e, true));
+            pos = e;
+        }
+        if pos < text.len() {
+            segments.push((pos, text.len(), false));
+        }
+        if segments.is_empty() {
+            segments.push((0, text.len(), false));
+        }
+
+        for (s, e, is_hl) in segments {
+            let slice = &text[s..e];
+            if slice.is_empty() {
+                continue;
+            }
+            let wide: Vec<u16> = OsStr::new(slice).encode_wide().collect();
+            let mut size = windows::Win32::Foundation::SIZE::default();
+            let _ = GetTextExtentPoint32W(hdc, &wide, &mut size);
+            if is_hl {
+                let _ = SetTextColor(hdc, COLORREF(hl_fg));
+                let _ = SetBkColor(hdc, COLORREF(hl_bg));
+            } else {
+                let _ = SetTextColor(hdc, COLORREF(fg));
+                let _ = SetBkColor(hdc, COLORREF(bg));
+            }
+            let out_rc = RECT {
+                left: x,
+                top: rc.top,
+                right: rc.right,
+                bottom: rc.bottom,
+            };
+            let _ = ExtTextOutW(
+                hdc,
+                x,
+                y,
+                ETO_CLIPPED | ETO_OPAQUE,
+                Some(&out_rc as *const RECT),
+                PCWSTR(wide.as_ptr()),
+                wide.len() as u32,
+                None,
+            );
+            x += size.cx;
+            if x >= rc.right {
+                break;
+            }
+        }
+    }
+}
+
+/// ListView NM_CUSTOMDRAW: content highlight + grid lines.
+fn handle_listview_custom_draw(
+    lparam: isize,
+    lv_hwnd: isize,
+    dark: bool,
+    highlight: Option<&HighlightState>,
+) -> Option<isize> {
+    use windows::Win32::Foundation::{HWND, RECT, LPARAM, WPARAM, COLORREF};
     use windows::Win32::Graphics::Gdi::{
         CreatePen, SelectObject, MoveToEx, LineTo, DeleteObject, PS_SOLID, HDC, HGDIOBJ,
     };
+    use windows::Win32::UI::Controls::NMLVCUSTOMDRAW;
     use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
-
-    // NMHDR layout: hwndFrom, idFrom, code
-    #[repr(C)]
-    struct NmHdr {
-        hwnd_from: isize,
-        id_from: usize,
-        code: u32,
-    }
-    // NMCUSTOMDRAW starts with NMHDR then dwDrawStage...
-    #[repr(C)]
-    struct NmCustomDraw {
-        hdr: NmHdr,
-        dw_draw_stage: u32,
-        hdc: isize,
-        rc: RECT,
-        dw_item_spec: usize,
-        u_item_state: u32,
-        l_iteml_param: isize,
-    }
 
     const NM_CUSTOMDRAW: u32 = (-12i32) as u32;
     const CDDS_PREPAINT: u32 = 0x00000001;
     const CDDS_POSTPAINT: u32 = 0x00000002;
-    const CDRF_NOTIFYPOSTPAINT: isize = 0x00000010;
+    const CDDS_ITEMPREPAINT: u32 = 0x00010001;
+    const CDDS_SUBITEMPREPAINT: u32 = 0x00030001;
     const CDRF_DODEFAULT: isize = 0x00000000;
-    // Grid color (BGR)
+    const CDRF_NOTIFYPOSTPAINT: isize = 0x00000010;
+    const CDRF_NOTIFYITEMDRAW: isize = 0x00000020;
+    const CDRF_NOTIFYSUBITEMDRAW: isize = 0x00000020;
+    const CDRF_SKIPDEFAULT: isize = 0x00000004;
+    const CDRF_NEWFONT: isize = 0x00000002;
+    const CDIS_SELECTED: u32 = 0x0001;
     const GRID_DARK: u32 = 0x00404040;
     const GRID_LIGHT: u32 = 0x00C0C0C0;
 
-    let nm = lparam as *const NmCustomDraw;
+    let nm = lparam as *mut NMLVCUSTOMDRAW;
     if nm.is_null() {
         return None;
     }
-    let cd = unsafe { &*nm };
-    if cd.hdr.hwnd_from != lv_hwnd {
+    let cd = unsafe { &mut *nm };
+    if cd.nmcd.hdr.hwndFrom.0 as isize != lv_hwnd {
         return None;
     }
-    if cd.hdr.code != NM_CUSTOMDRAW {
+    if cd.nmcd.hdr.code != NM_CUSTOMDRAW {
         return None;
     }
 
-    match cd.dw_draw_stage {
-        CDDS_PREPAINT => Some(CDRF_NOTIFYPOSTPAINT),
+    let stage = cd.nmcd.dwDrawStage.0;
+
+    match stage {
+        CDDS_PREPAINT => Some(CDRF_NOTIFYITEMDRAW | CDRF_NOTIFYPOSTPAINT),
+        CDDS_ITEMPREPAINT => {
+            // Default colors for non-content columns
+            if dark {
+                cd.clrText = COLORREF(CLR_DARK_FG);
+                cd.clrTextBk = COLORREF(CLR_DARK_BG);
+            }
+            Some(CDRF_NOTIFYSUBITEMDRAW | CDRF_NEWFONT)
+        }
+        s if s == CDDS_SUBITEMPREPAINT => {
+            let selected = (cd.nmcd.uItemState.0 & CDIS_SELECTED) != 0;
+
+            // If the row is selected, let the OS handle native visual style background and text rendering.
+            // This guarantees 100% native selection display (e.g. explorer translucency) without color mismatch.
+            if selected {
+                if dark {
+                    cd.clrText = COLORREF(CLR_DARK_FG);
+                    cd.clrTextBk = COLORREF(CLR_DARK_BG);
+                }
+                // If content column (2) and there is active query highlights, request POSTPAINT to overlay highlights on selection
+                if cd.iSubItem == 2 && highlight.is_some() {
+                    return Some(CDRF_DODEFAULT | CDRF_NOTIFYPOSTPAINT);
+                }
+                return Some(CDRF_DODEFAULT);
+            }
+
+            // Custom draw only for the content column (2) when NOT selected, to highlight match keywords.
+            if cd.iSubItem == 2 {
+                if let Some(hl) = highlight {
+                    let item = cd.nmcd.dwItemSpec as i32;
+                    let text = lv_get_subitem_text(lv_hwnd, item, 2);
+                    let ranges = find_highlight_ranges(&text, hl);
+                    let hdc = HDC(cd.nmcd.hdc.0);
+                    let rc = cd.nmcd.rc;
+                    draw_highlighted_text(hdc, &text, &ranges, &rc, dark, false, lv_hwnd, false);
+                    return Some(CDRF_SKIPDEFAULT);
+                }
+            }
+
+            if dark {
+                cd.clrText = COLORREF(CLR_DARK_FG);
+                cd.clrTextBk = COLORREF(CLR_DARK_BG);
+            }
+            Some(CDRF_NEWFONT)
+        }
+        s if s == 0x00030002 => { // CDDS_SUBITEMPOSTPAINT
+            if cd.iSubItem == 2 {
+                if let Some(hl) = highlight {
+                    let item = cd.nmcd.dwItemSpec as i32;
+                    let text = lv_get_subitem_text(lv_hwnd, item, 2);
+                    let ranges = find_highlight_ranges(&text, hl);
+                    if !ranges.is_empty() {
+                        let hdc = HDC(cd.nmcd.hdc.0);
+                        let rc = cd.nmcd.rc;
+                        let selected = (cd.nmcd.uItemState.0 & CDIS_SELECTED) != 0;
+                        draw_postpaint_highlights(hdc, &text, &ranges, &rc, dark, selected);
+                    }
+                }
+            }
+            Some(CDRF_DODEFAULT)
+        }
         CDDS_POSTPAINT => {
             let hwnd = HWND(lv_hwnd as _);
-            let hdc = HDC(cd.hdc as _);
+            let hdc = HDC(cd.nmcd.hdc.0 as _);
             let grid_clr = if dark { GRID_DARK } else { GRID_LIGHT };
 
             unsafe {
                 let mut client = RECT::default();
                 let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut client);
 
-                // Header height
                 let header = SendMessageW(hwnd, 0x1000 + 31 /* LVM_GETHEADER */, WPARAM(0), LPARAM(0));
                 let mut header_h = 0i32;
                 if header.0 != 0 {
@@ -488,17 +1034,21 @@ fn handle_listview_custom_draw(lparam: isize, lv_hwnd: isize, dark: bool) -> Opt
                 let count = SendMessageW(hwnd, 0x1000 + 4 /* LVM_GETITEMCOUNT */, WPARAM(0), LPARAM(0)).0 as i32;
                 let per_page = SendMessageW(hwnd, 0x1000 + 40 /* LVM_GETCOUNTPERPAGE */, WPARAM(0), LPARAM(0)).0 as i32;
 
-                let pen = CreatePen(PS_SOLID, 1, windows::Win32::Foundation::COLORREF(grid_clr));
+                let pen = CreatePen(PS_SOLID, 1, COLORREF(grid_clr));
                 let old = SelectObject(hdc, HGDIOBJ(pen.0));
 
-                // Horizontal lines under each visible row
                 if count > 0 {
                     let last = (top_idx + per_page + 1).min(count);
                     for idx in top_idx..last {
-                        let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 }; // LVIR_BOUNDS
+                        let mut rc = RECT {
+                            left: 0,
+                            top: 0,
+                            right: 0,
+                            bottom: 0,
+                        };
                         let ok = SendMessageW(
                             hwnd,
-                            0x1000 + 14 /* LVM_GETITEMRECT */,
+                            0x1000 + 14, /* LVM_GETITEMRECT */
                             WPARAM(idx as usize),
                             LPARAM(&mut rc as *mut RECT as isize),
                         );
@@ -513,9 +1063,10 @@ fn handle_listview_custom_draw(lparam: isize, lv_hwnd: isize, dark: bool) -> Opt
                     }
                 }
 
-                // Vertical column separators
                 let mut x = 0i32;
-                for col in 0..16 {
+                // Only draw separators between columns (0 and 1)
+                // Exclude column 2 (index 2) right border to avoid extra line near scrollbar
+                for col in 0..2 {
                     let w = SendMessageW(hwnd, 0x1000 + 29 /* LVM_GETCOLUMNWIDTH */, WPARAM(col), LPARAM(0)).0 as i32;
                     if w <= 0 {
                         break;
@@ -529,7 +1080,7 @@ fn handle_listview_custom_draw(lparam: isize, lv_hwnd: isize, dark: bool) -> Opt
                 }
 
                 let _ = SelectObject(hdc, old);
-                let _ = DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(pen.0));
+                let _ = DeleteObject(HGDIOBJ(pen.0));
             }
             Some(CDRF_DODEFAULT)
         }
@@ -794,22 +1345,20 @@ fn apply_font_to_hwnd_tree(root: windows::Win32::Foundation::HWND, hfont: isize)
 /// Path used for the last successful load / save (portable-first).
 static CONFIG_PATH: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct HistoryConfig {
+    #[serde(default)]
+    query: Vec<String>,
+    #[serde(default)]
+    dir: Vec<String>,
+    #[serde(default)]
+    file_mask: Vec<String>,
+    #[serde(default)]
+    dir_mask: Vec<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct AppConfig {
-    #[serde(default)]
-    theme: usize,
-    #[serde(default)]
-    editor_path: String,
-    #[serde(default)]
-    editor_args: String,
-    #[serde(default = "default_font_family")]
-    font_family: String,
-    #[serde(default = "default_font_size")]
-    font_size: u32,
-    #[serde(default = "default_list_font_family")]
-    list_font_family: String,
-    #[serde(default = "default_list_font_size")]
-    list_font_size: u32,
+struct LayoutConfig {
     /// Tree pane width in logical (96-DPI) pixels
     #[serde(default = "default_tree_width")]
     tree_width: u32,
@@ -830,26 +1379,11 @@ struct AppConfig {
     window_x: Option<i32>,
     #[serde(default)]
     window_y: Option<i32>,
-    #[serde(default)]
-    history_query: Vec<String>,
-    #[serde(default)]
-    history_dir: Vec<String>,
-    #[serde(default)]
-    history_file_mask: Vec<String>,
-    #[serde(default)]
-    history_dir_mask: Vec<String>,
 }
 
-impl Default for AppConfig {
+impl Default for LayoutConfig {
     fn default() -> Self {
         Self {
-            theme: 0,
-            editor_path: String::new(),
-            editor_args: String::new(),
-            font_family: default_font_family(),
-            font_size: default_font_size(),
-            list_font_family: default_list_font_family(),
-            list_font_size: default_list_font_size(),
             tree_width: default_tree_width(),
             col_filename_width: default_col_filename_width(),
             col_line_width: default_col_line_width(),
@@ -858,12 +1392,54 @@ impl Default for AppConfig {
             window_height: default_window_height(),
             window_x: None,
             window_y: None,
-            history_query: Vec::new(),
-            history_dir: Vec::new(),
-            history_file_mask: Vec::new(),
-            history_dir_mask: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct EditorConfig {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    args: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct AppearanceConfig {
+    #[serde(default)]
+    theme: usize,
+    #[serde(default = "default_font_family")]
+    font_family: String,
+    #[serde(default = "default_font_size")]
+    font_size: u32,
+    #[serde(default = "default_list_font_family")]
+    list_font_family: String,
+    #[serde(default = "default_list_font_size")]
+    list_font_size: u32,
+}
+
+impl Default for AppearanceConfig {
+    fn default() -> Self {
+        Self {
+            theme: 0,
+            font_family: default_font_family(),
+            font_size: default_font_size(),
+            list_font_family: default_list_font_family(),
+            list_font_size: default_list_font_size(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct AppConfig {
+    #[serde(default)]
+    history: HistoryConfig,
+    #[serde(default)]
+    layout: LayoutConfig,
+    #[serde(default)]
+    editor: EditorConfig,
+    #[serde(default)]
+    appearance: AppearanceConfig,
 }
 
 fn portable_config_path() -> PathBuf {
@@ -1263,7 +1839,7 @@ fn expand_editor_args(template: &str, file: &str, line: usize, column: usize) ->
 // Settings Dialog Window
 #[derive(Default, NwgUi)]
 pub struct SettingsDialog {
-    #[nwg_control(size: (440, 400), title: "設定", flags: "WINDOW")]
+    #[nwg_control(size: (480, 370), title: "設定", flags: "WINDOW")]
     #[nwg_events(OnWindowClose: [SettingsDialog::handle_close])]
     window: nwg::Window,
 
@@ -1271,22 +1847,22 @@ pub struct SettingsDialog {
     exe_dialog: nwg::FileDialog,
 
     // Appearance group: theme / UI font / list font (each on its own row)
-    #[nwg_control(parent: window, position: (15, 12), size: (405, 155), flags: "VISIBLE|BORDER")]
+    #[nwg_control(parent: window, position: (15, 12), size: (445, 155), flags: "VISIBLE|BORDER")]
     appearance_frame: nwg::Frame,
 
     #[nwg_control(parent: appearance_frame, text: "外観", position: (10, 8), size: (200, 20))]
     lbl_appearance: nwg::Label,
 
     // Row 1: Theme
-    #[nwg_control(parent: appearance_frame, text: "テーマ", position: (10, 38), size: (90, 20))]
+    #[nwg_control(parent: appearance_frame, text: "テーマ", position: (10, 38), size: (105, 20))]
     lbl_theme: nwg::Label,
 
-    #[nwg_control(parent: appearance_frame, collection: vec!["システム設定".to_string(), "ライトモード".to_string(), "ダークモード".to_string()], position: (105, 35), size: (280, 25))]
+    #[nwg_control(parent: appearance_frame, collection: vec!["システム設定".to_string(), "ライトモード".to_string(), "ダークモード".to_string()], position: (120, 35), size: (305, 25))]
     #[nwg_events(OnComboxBoxSelection: [SettingsDialog::handle_theme_change])]
     cb_theme: nwg::ComboBox<String>,
 
     // Row 2: UI Font + size
-    #[nwg_control(parent: appearance_frame, text: "UIフォント", position: (10, 73), size: (90, 20))]
+    #[nwg_control(parent: appearance_frame, text: "UIフォント", position: (10, 73), size: (105, 20))]
     lbl_font: nwg::Label,
 
     #[nwg_control(parent: appearance_frame, collection: vec![
@@ -1297,23 +1873,23 @@ pub struct SettingsDialog {
         "Meiryo".to_string(),
         "Yu Gothic".to_string(),
         "Consolas".to_string(),
-    ], position: (105, 70), size: (200, 25))]
+    ], position: (120, 70), size: (225, 25))]
     #[nwg_events(OnComboxBoxSelection: [SettingsDialog::handle_font_change])]
     cb_font: nwg::ComboBox<String>,
 
-    #[nwg_control(parent: appearance_frame, text: "サイズ", position: (315, 73), size: (45, 20))]
+    #[nwg_control(parent: appearance_frame, text: "サイズ", position: (355, 73), size: (35, 20))]
     lbl_font_size: nwg::Label,
 
     #[nwg_control(parent: appearance_frame, collection: vec![
         "10".to_string(), "11".to_string(), "12".to_string(), "13".to_string(),
         "14".to_string(), "15".to_string(), "16".to_string(), "18".to_string(),
         "20".to_string(), "22".to_string(), "24".to_string(),
-    ], position: (355, 70), size: (40, 25))]
+    ], position: (395, 70), size: (40, 25))]
     #[nwg_events(OnComboxBoxSelection: [SettingsDialog::handle_font_change])]
     cb_font_size: nwg::ComboBox<String>,
 
     // Row 3: Result list font + size
-    #[nwg_control(parent: appearance_frame, text: "結果リスト", position: (10, 108), size: (90, 20))]
+    #[nwg_control(parent: appearance_frame, text: "結果リストフォント", position: (10, 108), size: (105, 20))]
     lbl_list_font: nwg::Label,
 
     #[nwg_control(parent: appearance_frame, collection: vec![
@@ -1324,23 +1900,23 @@ pub struct SettingsDialog {
         "Meiryo UI".to_string(),
         "MS Gothic".to_string(),
         "Segoe UI".to_string(),
-    ], position: (105, 105), size: (200, 25))]
+    ], position: (120, 105), size: (225, 25))]
     #[nwg_events(OnComboxBoxSelection: [SettingsDialog::handle_font_change])]
     cb_list_font: nwg::ComboBox<String>,
 
-    #[nwg_control(parent: appearance_frame, text: "サイズ", position: (315, 108), size: (45, 20))]
+    #[nwg_control(parent: appearance_frame, text: "サイズ", position: (355, 108), size: (35, 20))]
     lbl_list_font_size: nwg::Label,
 
     #[nwg_control(parent: appearance_frame, collection: vec![
         "10".to_string(), "11".to_string(), "12".to_string(), "13".to_string(),
         "14".to_string(), "15".to_string(), "16".to_string(), "18".to_string(),
         "20".to_string(), "22".to_string(), "24".to_string(),
-    ], position: (355, 105), size: (40, 25))]
+    ], position: (395, 105), size: (40, 25))]
     #[nwg_events(OnComboxBoxSelection: [SettingsDialog::handle_font_change])]
     cb_list_font_size: nwg::ComboBox<String>,
 
     // External editor group
-    #[nwg_control(parent: window, position: (15, 180), size: (405, 150), flags: "VISIBLE|BORDER")]
+    #[nwg_control(parent: window, position: (15, 180), size: (445, 125), flags: "VISIBLE|BORDER")]
     editor_frame: nwg::Frame,
 
     #[nwg_control(parent: editor_frame, text: "外部エディタ", position: (10, 8), size: (200, 20))]
@@ -1349,23 +1925,23 @@ pub struct SettingsDialog {
     #[nwg_control(parent: editor_frame, text: "パス", position: (10, 35), size: (40, 20))]
     lbl_editor_path: nwg::Label,
 
-    #[nwg_control(parent: editor_frame, text: "", position: (55, 32), size: (255, 25))]
+    #[nwg_control(parent: editor_frame, text: "", position: (55, 32), size: (295, 25))]
     txt_editor_path: nwg::TextInput,
 
-    #[nwg_control(parent: editor_frame, text: "参照...", position: (320, 32), size: (65, 25))]
+    #[nwg_control(parent: editor_frame, text: "参照...", position: (360, 32), size: (65, 25))]
     #[nwg_events(OnButtonClick: [SettingsDialog::handle_editor_browse])]
     btn_editor_browse: nwg::Button,
 
     #[nwg_control(parent: editor_frame, text: "引数", position: (10, 68), size: (40, 20))]
     lbl_editor_args: nwg::Label,
 
-    #[nwg_control(parent: editor_frame, text: "", position: (55, 65), size: (330, 25))]
+    #[nwg_control(parent: editor_frame, text: "", position: (55, 65), size: (370, 25))]
     txt_editor_args: nwg::TextInput,
 
-    #[nwg_control(parent: editor_frame, text: "$f=ファイル  $l=行番号  $c=列", position: (55, 93), size: (330, 18))]
+    #[nwg_control(parent: editor_frame, text: "$f=ファイル  $l=行番号  $c=列", position: (55, 93), size: (370, 18))]
     lbl_editor_args_help: nwg::Label,
 
-    #[nwg_control(parent: window, text: "閉じる", position: (180, 350), size: (80, 25))]
+    #[nwg_control(parent: window, text: "閉じる", position: (200, 320), size: (80, 25))]
     #[nwg_events(OnButtonClick: [SettingsDialog::handle_close])]
     btn_close: nwg::Button,
 
@@ -1432,24 +2008,27 @@ impl SettingsDialog {
 
     fn save_settings(&self) {
         let mut cfg = load_config();
-        cfg.editor_path = self.txt_editor_path.text();
-        cfg.editor_args = self.txt_editor_args.text();
-        cfg.theme = self.cb_theme.selection().unwrap_or(0);
-        cfg.font_family = self.selected_font_family();
-        cfg.font_size = self.selected_font_size();
-        cfg.list_font_family = self.selected_list_font_family();
-        cfg.list_font_size = self.selected_list_font_size();
+        cfg.editor.path = self.txt_editor_path.text();
+        cfg.editor.args = self.txt_editor_args.text();
+        cfg.appearance.theme = self.cb_theme.selection().unwrap_or(0);
+        cfg.appearance.font_family = self.selected_font_family();
+        cfg.appearance.font_size = self.selected_font_size();
+        cfg.appearance.list_font_family = self.selected_list_font_family();
+        cfg.appearance.list_font_size = self.selected_list_font_size();
         save_config(&cfg);
     }
 }
 
+
+
 #[derive(Default, NwgUi)]
 pub struct JGrepApp {
     // Main Window
-    #[nwg_control(size: (1000, 680), position: (150, 100), title: "JGrep3", flags: "MAIN_WINDOW|VISIBLE")]
+    #[nwg_control(size: (1000, 680), position: (150, 100), title: "JGrep3", flags: "MAIN_WINDOW")]
     #[nwg_events(
         OnWindowClose: [JGrepApp::handle_close],
         OnResize: [JGrepApp::handle_resize],
+        OnWindowMaximize: [JGrepApp::handle_resize],
         OnMinMaxInfo: [JGrepApp::handle_min_max(SELF, EVT_DATA)]
     )]
     window: nwg::Window,
@@ -1521,7 +2100,7 @@ pub struct JGrepApp {
     dir_dialog: nwg::FileDialog,
 
     // Action buttons (placed next to query field)
-    #[nwg_control(text: "検索開始", size: (80, 25))]
+    #[nwg_control(text: "🔍 検索開始", size: (80, 25))]
     #[nwg_events(OnButtonClick: [JGrepApp::handle_search])]
     btn_search: nwg::Button,
 
@@ -1589,6 +2168,10 @@ pub struct JGrepApp {
     #[nwg_control]
     status_bar: nwg::StatusBar,
 
+    // Search progress (marquee) shown over the right side of the status bar
+    #[nwg_control(size: (160, 16), position: (0, 0), flags: "VISIBLE|MARQUEE")]
+    progress_bar: nwg::ProgressBar,
+
     // Internal state management
     path_map: RefCell<HashMap<isize, PathBuf>>,
     result_file_map: RefCell<HashMap<usize, (String, usize, usize)>>,
@@ -1626,6 +2209,8 @@ pub struct JGrepApp {
     last_resized_col: RefCell<Option<usize>>,
     /// Guard against re-entrant stretch from set_column_width notifications
     stretching_columns: Cell<bool>,
+    /// Content-column search highlight
+    highlight: Rc<RefCell<Option<HighlightState>>>,
 }
 
 impl JGrepApp {
@@ -1641,18 +2226,18 @@ impl JGrepApp {
     fn save_layout(&self) {
         let mut cfg = load_config();
         let tw = (*self.left_width.borrow()).max(120) as u32;
-        cfg.tree_width = tw;
-        cfg.col_filename_width = self.list_col_width_logical(0, DEFAULT_COL_FILENAME_WIDTH);
-        cfg.col_line_width = self.list_col_width_logical(1, DEFAULT_COL_LINE_WIDTH);
-        cfg.col_content_width = self.list_col_width_logical(2, DEFAULT_COL_CONTENT_WIDTH);
+        cfg.layout.tree_width = tw;
+        cfg.layout.col_filename_width = self.list_col_width_logical(0, DEFAULT_COL_FILENAME_WIDTH);
+        cfg.layout.col_line_width = self.list_col_width_logical(1, DEFAULT_COL_LINE_WIDTH);
+        cfg.layout.col_content_width = self.list_col_width_logical(2, DEFAULT_COL_CONTENT_WIDTH);
 
         // window.size/position return logical units when high-dpi is enabled
         let (w, h) = self.window.size();
         let (x, y) = self.window.position();
-        cfg.window_width = w.max(700);
-        cfg.window_height = h.max(500);
-        cfg.window_x = Some(x);
-        cfg.window_y = Some(y);
+        cfg.layout.window_width = w.max(700);
+        cfg.layout.window_height = h.max(500);
+        cfg.layout.window_x = Some(x);
+        cfg.layout.window_y = Some(y);
 
         save_config(&cfg);
     }
@@ -1720,7 +2305,7 @@ impl JGrepApp {
         if self.stretching_columns.get() {
             return;
         }
-        let available = self.list_view_client_width_phys();
+        let available = (self.list_view_client_width_phys() - 2).max(0);
         if available < 60 {
             return;
         }
@@ -1795,20 +2380,52 @@ impl JGrepApp {
     }
 
     fn init_app(&self) {
+        // Lock window redraw immediately to prevent initial white flash of child controls
+        if let Some(hwnd_raw) = self.window.handle.hwnd() {
+            unsafe {
+                use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+                use windows::Win32::Foundation::{HWND, WPARAM, LPARAM};
+                let _ = SendMessageW(HWND(hwnd_raw as _), 0x000B /* WM_SETREDRAW */, WPARAM(0), LPARAM(0));
+            }
+        }
         // Load layout from config (logical units)
         let cfg_layout = load_config();
-        *self.left_width.borrow_mut() = cfg_layout.tree_width.max(120) as i32;
+        *self.left_width.borrow_mut() = cfg_layout.layout.tree_width.max(120) as i32;
 
         // Restore window size / position
-        let ww = cfg_layout.window_width.max(700);
-        let wh = cfg_layout.window_height.max(500);
+        let ww = cfg_layout.layout.window_width.max(700);
+        let wh = cfg_layout.layout.window_height.max(500);
         self.window.set_size(ww, wh);
-        if let (Some(x), Some(y)) = (cfg_layout.window_x, cfg_layout.window_y) {
+        if let (Some(x), Some(y)) = (cfg_layout.layout.window_x, cfg_layout.layout.window_y) {
             self.window.set_position(x, y);
         }
 
-        // Initialize status bar
+        // Load embedded application icon (ID: 1) and set it to the Window (WM_SETICON)
+        if let Some(hwnd_raw) = self.window.handle.hwnd() {
+            use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+            use windows::Win32::UI::WindowsAndMessaging::{LoadIconW, SendMessageW, WM_SETICON, ICON_SMALL, ICON_BIG};
+            use windows::Win32::Foundation::{HWND, WPARAM, LPARAM};
+            use windows::core::PCWSTR;
+
+            unsafe {
+                let hinstance = GetModuleHandleW(None).unwrap_or_default();
+                // Resource ID 1 is embedded via winres
+                let hicon = LoadIconW(hinstance, PCWSTR(1 as *const u16));
+                if let Ok(hicon) = hicon {
+                    if !hicon.0.is_null() {
+                        let hwnd = HWND(hwnd_raw as _);
+                        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(hicon.0 as isize));
+                        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(hicon.0 as isize));
+                    }
+                }
+            }
+        }
+
+        // Initialize status bar + progress bar
         self.status_bar.set_text(0, "準備完了");
+        self.progress_bar.set_range(0..100);
+        self.progress_bar.set_pos(0);
+        self.progress_bar.set_visible(false);
 
         // Initialize search result list view headers
         self.list_view.insert_column("ファイル名");
@@ -1816,10 +2433,44 @@ impl JGrepApp {
         self.list_view.insert_column("内容");
         self.list_view.set_headers_enabled(true);
         self.apply_list_col_widths(
-            cfg_layout.col_filename_width,
-            cfg_layout.col_line_width,
-            cfg_layout.col_content_width,
+            cfg_layout.layout.col_filename_width,
+            cfg_layout.layout.col_line_width,
+            cfg_layout.layout.col_content_width,
         );
+
+        // Align Line Number column (index 1) to the right
+        if let Some(lv_hwnd_raw) = self.list_view.handle.hwnd() {
+            use windows::Win32::UI::Controls::{LVCOLUMNW, LVCF_FMT, LVCFMT_RIGHT, LVM_SETCOLUMNW};
+            use windows::Win32::Foundation::{HWND, WPARAM, LPARAM};
+            use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+
+            let lvc = LVCOLUMNW {
+                mask: LVCF_FMT,
+                fmt: LVCFMT_RIGHT,
+                ..Default::default()
+            };
+            unsafe {
+                SendMessageW(
+                    HWND(lv_hwnd_raw as _),
+                    LVM_SETCOLUMNW,
+                    WPARAM(1),
+                    LPARAM(&lvc as *const LVCOLUMNW as isize),
+                );
+            }
+        }
+
+        // Force the vertical scrollbar to be always visible (even if empty or disabled)
+        // to prevent horizontal layout shift / column stretching artifacts when items are populated.
+        if let Some(lv_hwnd) = self.list_view.handle.hwnd() {
+            use windows::Win32::Foundation::{HWND, BOOL};
+            #[link(name = "user32")]
+            unsafe extern "system" {
+                fn ShowScrollBar(hWnd: HWND, wBar: i32, bShow: BOOL) -> BOOL;
+            }
+            unsafe {
+                let _ = ShowScrollBar(HWND(lv_hwnd as _), 1 /* SB_VERT */, BOOL(1));
+            }
+        }
 
         // Load system icons and insert into ImageList directly
         let icon_indices = [34, 234, 15, 8, 3];
@@ -1891,36 +2542,36 @@ impl JGrepApp {
         *dialog.parent_sender.borrow_mut() = Some(self.setting_notice.sender());
         
         let cfg = load_config();
-        dialog.txt_editor_path.set_text(&cfg.editor_path);
-        dialog.txt_editor_args.set_text(&cfg.editor_args);
-        dialog.cb_theme.set_selection(Some(cfg.theme));
+        dialog.txt_editor_path.set_text(&cfg.editor.path);
+        dialog.txt_editor_args.set_text(&cfg.editor.args);
+        dialog.cb_theme.set_selection(Some(cfg.appearance.theme));
         let font_idx = UI_FONT_FAMILIES
             .iter()
-            .position(|f| *f == cfg.font_family.as_str())
+            .position(|f| *f == cfg.appearance.font_family.as_str())
             .unwrap_or(0);
         dialog.cb_font.set_selection(Some(font_idx));
         let list_font_idx = LIST_FONT_FAMILIES
             .iter()
-            .position(|f| *f == cfg.list_font_family.as_str())
+            .position(|f| *f == cfg.appearance.list_font_family.as_str())
             .unwrap_or(0);
         dialog.cb_list_font.set_selection(Some(list_font_idx));
-        let font_size = if cfg.font_size == 0 {
+        let font_size = if cfg.appearance.font_size == 0 {
             DEFAULT_UI_FONT_SIZE
         } else {
-            cfg.font_size
+            cfg.appearance.font_size
         };
-        let list_font_size = if cfg.list_font_size == 0 {
+        let list_font_size = if cfg.appearance.list_font_size == 0 {
             DEFAULT_LIST_FONT_SIZE
         } else {
-            cfg.list_font_size
+            cfg.appearance.list_font_size
         };
         dialog.cb_font_size.set_selection(Some(font_size_index(font_size)));
         dialog
             .cb_list_font_size
             .set_selection(Some(font_size_index(list_font_size)));
-        let theme_idx = cfg.theme;
-        let font_family = cfg.font_family.clone();
-        let list_font_family = cfg.list_font_family.clone();
+        let theme_idx = cfg.appearance.theme;
+        let font_family = cfg.appearance.font_family.clone();
+        let list_font_family = cfg.appearance.list_font_family.clone();
 
         // Editable history combos (CBS_DROPDOWN — free text + dropdown history)
         {
@@ -1932,12 +2583,12 @@ impl JGrepApp {
             *self.cb_dir.borrow_mut() = HistoryCombo::create(parent, font_src);
             *self.cb_file_mask.borrow_mut() = HistoryCombo::create(parent, font_src);
             *self.cb_dir_mask.borrow_mut() = HistoryCombo::create(parent, font_src);
-            self.cb_query.borrow_mut().apply_history(&cfg.history_query, "");
-            self.cb_dir.borrow_mut().apply_history(&cfg.history_dir, "");
-            self.cb_file_mask.borrow_mut().apply_history(&cfg.history_file_mask, "*.*");
+            self.cb_query.borrow_mut().apply_history(&cfg.history.query, "");
+            self.cb_dir.borrow_mut().apply_history(&cfg.history.dir, "");
+            self.cb_file_mask.borrow_mut().apply_history(&cfg.history.file_mask, "*.*");
             self.cb_dir_mask
                 .borrow_mut()
-                .apply_history(&cfg.history_dir_mask, "**;!.git;!node_modules;!target");
+                .apply_history(&cfg.history.dir_mask, "**;!.git;!node_modules;!target");
         }
 
         *self.setting_dialog.borrow_mut() = Some(dialog);
@@ -1987,6 +2638,7 @@ impl JGrepApp {
         let notice_sender = self.setting_notice.sender();
         let is_dark_cell = self.is_dark.clone();
         let brushes = self.theme_brushes.clone();
+        let highlight_cell = self.highlight.clone();
         let lv_hwnd_raw = self.list_view.handle.hwnd().map(|h| h as isize).unwrap_or(0);
 
         let handler = nwg::bind_raw_event_handler(&self.window.handle, 0xFFFF + 1, move |hwnd, msg, wparam, lparam| {
@@ -1995,9 +2647,15 @@ impl JGrepApp {
                 return Some(0);
             }
 
-            // WM_NOTIFY — ListView custom draw (dark grid lines)
+            // WM_NOTIFY — ListView custom draw (highlight + grid)
             if msg == 0x004E && lparam != 0 {
-                if let Some(ret) = handle_listview_custom_draw(lparam, lv_hwnd_raw, *is_dark_cell.borrow()) {
+                let hl = highlight_cell.borrow();
+                if let Some(ret) = handle_listview_custom_draw(
+                    lparam,
+                    lv_hwnd_raw,
+                    *is_dark_cell.borrow(),
+                    hl.as_ref(),
+                ) {
                     return Some(ret);
                 }
             }
@@ -2101,6 +2759,21 @@ impl JGrepApp {
                 }
             }
 
+            // WM_ERASEBKGND: force custom background paint before controls draw, preventing white flashes
+            if msg == 0x0014 {
+                use windows::Win32::Graphics::Gdi::FillRect;
+                use windows::Win32::Foundation::RECT;
+                use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+                let hdc = windows::Win32::Graphics::Gdi::HDC(wparam as _);
+                let wh = HWND(hwnd as _);
+                let mut rc = RECT::default();
+                unsafe {
+                    let _ = GetClientRect(wh, &mut rc);
+                    let _ = FillRect(hdc, &rc, brushes.bg(dark));
+                }
+                return Some(1);
+            }
+
             if let Some(ret) = handle_theme_color_msg(hwnd as isize, msg, wparam, &brushes, dark) {
                 return Some(ret);
             }
@@ -2166,13 +2839,13 @@ impl JGrepApp {
                 let is_track_end =
                     nm.code == HDN_ENDTRACKW || nm.code == HDN_ENDTRACKA;
                 let is_tracking = nm.code == HDN_TRACKW || nm.code == HDN_TRACKA;
-                let is_item_changed = nm.code == HDN_ITEMCHANGEDW;
+                let is_item_changed = nm.code == HDN_ITEMCHANGEDW || nm.code == ((-320i32) as u32); // HDN_ITEMCHANGEDW or HDN_ITEMCHANGEDA
 
                 if is_track_end || is_tracking || is_item_changed {
                     let col = if nm.i_item >= 0 { nm.i_item as usize } else { 0 };
                     *last_col.borrow_mut() = Some(col.min(2));
-                    // On drag end only (not every ITEMCHANGED from our own set_column_width)
-                    if is_track_end {
+                    // Fire notice on both track end and item changed to guarantee 100% layout fit after drag/double-click.
+                    if is_track_end || is_item_changed {
                         col_resize_sender.notice();
                     }
                 }
@@ -2455,8 +3128,33 @@ impl JGrepApp {
             _ => false,
         };
         self.apply_theme(dark);
+
+        // Apply custom subclass to progress bar to render high-quality custom gradient Marquee
+        if let Some(pb_hwnd) = self.progress_bar.handle.hwnd() {
+            unsafe {
+                use windows::Win32::Foundation::HWND;
+                let dark_val = if dark { 1 } else { 0 };
+                let _ = SetWindowSubclass(HWND(pb_hwnd as _), progress_bar_subclass_proc, 1001, dark_val);
+            }
+        }
         self.apply_ui_font(&font_family, font_size);
         self.apply_list_font(&list_font_family, list_font_size);
+
+        // Unlock window redraw and redraw the entire window hierarchy to ensure flat dark color paint.
+        if let Some(hwnd_raw) = self.window.handle.hwnd() {
+            unsafe {
+                use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+                use windows::Win32::Graphics::Gdi::{RedrawWindow, RDW_INVALIDATE, RDW_UPDATENOW, RDW_ALLCHILDREN, RDW_ERASE};
+                use windows::Win32::Foundation::{WPARAM, LPARAM, HWND};
+                let hwnd = HWND(hwnd_raw as _);
+                let _ = SendMessageW(hwnd, 0x000B /* WM_SETREDRAW */, WPARAM(1), LPARAM(0));
+                let _ = RedrawWindow(hwnd, None, None, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_ERASE);
+            }
+        }
+
+        // Show window only after all layouts, themes, and fonts are fully applied.
+        // This eliminates the initial white window flash completely.
+        self.window.set_visible(true);
     }
 
     fn apply_ui_font(&self, family: &str, size: u32) {
@@ -2678,6 +3376,7 @@ impl JGrepApp {
         self.search_results.borrow_mut().clear();
         self.update_sort_header_indicators(None, true);
         self.status_bar.set_text(0, "結果をクリアしました。");
+        *self.highlight.borrow_mut() = None;
     }
 
     fn handle_search(&self) {
@@ -2713,14 +3412,14 @@ impl JGrepApp {
         let history_dir_mask = self.cb_dir_mask.borrow_mut().sync_history(&dir_mask);
         {
             let mut cfg = load_config();
-            cfg.history_query = history_query;
-            cfg.history_dir = history_dir;
-            cfg.history_file_mask = history_file_mask;
-            cfg.history_dir_mask = history_dir_mask;
+            cfg.history.query = history_query;
+            cfg.history.dir = history_dir;
+            cfg.history.file_mask = history_file_mask;
+            cfg.history.dir_mask = history_dir_mask;
             if let Some(ref dialog) = *self.setting_dialog.borrow() {
-                cfg.editor_path = dialog.txt_editor_path.text();
-                cfg.editor_args = dialog.txt_editor_args.text();
-                cfg.theme = dialog.cb_theme.selection().unwrap_or(0);
+                cfg.editor.path = dialog.txt_editor_path.text();
+                cfg.editor.args = dialog.txt_editor_args.text();
+                cfg.appearance.theme = dialog.cb_theme.selection().unwrap_or(0);
             }
             save_config(&cfg);
         }
@@ -2744,10 +3443,11 @@ impl JGrepApp {
         let notice_sender = self.search_notice.sender();
 
         let cancel_token_clone = cancel_token.clone();
+        let query_for_search = query.clone();
         let thread_handle = std::thread::spawn(move || {
             search::run_search(
                 search_dir,
-                query,
+                query_for_search,
                 file_mask,
                 dir_mask,
                 recursive,
@@ -2766,6 +3466,23 @@ impl JGrepApp {
             thread_handle,
         });
 
+        // Set search highlight keyword
+        *self.highlight.borrow_mut() = Some(HighlightState {
+            pattern: query.clone(),
+            case_sensitive,
+            is_regex,
+        });
+
+        // Show progress bar & start custom timer animation (30ms interval)
+        self.progress_bar.set_visible(true);
+        if let Some(pb_hwnd) = self.progress_bar.handle.hwnd() {
+            unsafe {
+                use windows::Win32::UI::WindowsAndMessaging::SetTimer;
+                use windows::Win32::Foundation::HWND;
+                let _ = SetTimer(HWND(pb_hwnd as _), 1, 30, None);
+            }
+        }
+
         self.status_bar.set_text(0, "検索中...");
     }
 
@@ -2774,6 +3491,17 @@ impl JGrepApp {
         if let Some(ref mut s) = *state {
             s.cancel_token.store(true, Ordering::Relaxed);
             self.status_bar.set_text(0, "検索を停止しています...");
+
+            // Hide progress bar & stop timer animation
+            if let Some(pb_hwnd) = self.progress_bar.handle.hwnd() {
+                unsafe {
+                    use windows::Win32::UI::WindowsAndMessaging::KillTimer;
+                    use windows::Win32::Foundation::HWND;
+                    let _ = KillTimer(HWND(pb_hwnd as _), 1);
+                }
+            }
+            self.progress_bar.set_visible(false);
+            self.stretch_list_columns();
         }
     }
 
@@ -2820,12 +3548,34 @@ impl JGrepApp {
                         self.status_bar.set_text(0, &format!("検索完了。{} 個のマッチ (走査: {}, 時間: {:.3}秒)", match_count, total_scanned, elapsed_sec));
                         self.set_ui_searching_state(false);
                         *self.search_state.borrow_mut() = None;
+
+                        // Hide progress bar & stop timer animation
+                        if let Some(pb_hwnd) = self.progress_bar.handle.hwnd() {
+                            unsafe {
+                                use windows::Win32::UI::WindowsAndMessaging::KillTimer;
+                                use windows::Win32::Foundation::HWND;
+                                let _ = KillTimer(HWND(pb_hwnd as _), 1);
+                            }
+                        }
+                        self.progress_bar.set_visible(false);
+                        self.stretch_list_columns();
                     }
                     SearchStatus::Error(err) => {
                         nwg::simple_message("検索エラー", &err);
                         self.status_bar.set_text(0, "エラーにより検索を中止しました。");
                         self.set_ui_searching_state(false);
                         *self.search_state.borrow_mut() = None;
+
+                        // Hide progress bar & stop timer animation
+                        if let Some(pb_hwnd) = self.progress_bar.handle.hwnd() {
+                            unsafe {
+                                use windows::Win32::UI::WindowsAndMessaging::KillTimer;
+                                use windows::Win32::Foundation::HWND;
+                                let _ = KillTimer(HWND(pb_hwnd as _), 1);
+                            }
+                        }
+                        self.progress_bar.set_visible(false);
+                        self.stretch_list_columns();
                     }
                 }
             }
@@ -3041,6 +3791,48 @@ impl JGrepApp {
                 apply_dark_titlebar(sh, dark);
                 unsafe {
                     SetClassLongPtrW(sh, GCLP_HBRBACKGROUND, bg_brush.0 as isize);
+
+                    // Extract system gear (cog) icon for Settings dialog title bar
+                    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+                    use windows::Win32::UI::WindowsAndMessaging::{LoadIconW, SendMessageW, WM_SETICON, ICON_SMALL, ICON_BIG, HICON};
+                    use windows::Win32::UI::Shell::ExtractIconW;
+                    use windows::Win32::Foundation::{WPARAM, LPARAM};
+                    use windows::core::PCWSTR;
+                    use std::os::windows::ffi::OsStrExt;
+                    use std::ffi::OsStr;
+
+                    let hinstance = GetModuleHandleW(None).unwrap_or_default();
+                    let mut hicon = HICON::default();
+
+                    // Try imageres.dll Resource ID 67 (using negative index -67 for modern settings gear icon)
+                    let imageres_path: Vec<u16> = OsStr::new("imageres.dll").encode_wide().chain(Some(0)).collect();
+                    let hicon_gear = ExtractIconW(hinstance, PCWSTR(imageres_path.as_ptr()), (-67i32) as u32);
+                    if !hicon_gear.0.is_null() && hicon_gear.0 as usize != 1 {
+                        hicon = hicon_gear;
+                    } else {
+                        // Fallback to imageres.dll Resource ID 150 (using negative index -150)
+                        let hicon_imageres = ExtractIconW(hinstance, PCWSTR(imageres_path.as_ptr()), (-150i32) as u32);
+                        if !hicon_imageres.0.is_null() && hicon_imageres.0 as usize != 1 {
+                            hicon = hicon_imageres;
+                        } else {
+                            // Fallback to shell32.dll Resource ID 22 (using negative index -22)
+                            let shell32_path: Vec<u16> = OsStr::new("shell32.dll").encode_wide().chain(Some(0)).collect();
+                            let hicon_classic = ExtractIconW(hinstance, PCWSTR(shell32_path.as_ptr()), (-22i32) as u32);
+                            if !hicon_classic.0.is_null() && hicon_classic.0 as usize != 1 {
+                                hicon = hicon_classic;
+                            } else {
+                                // Fallback to main app icon
+                                if let Ok(hi) = LoadIconW(hinstance, PCWSTR(1 as *const u16)) {
+                                    hicon = hi;
+                                }
+                            }
+                        }
+                    }
+
+                    if !hicon.0.is_null() {
+                        let _ = SendMessageW(sh, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(hicon.0 as isize));
+                        let _ = SendMessageW(sh, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(hicon.0 as isize));
+                    }
                 }
 
                 // Buttons
@@ -3147,11 +3939,11 @@ impl JGrepApp {
             // Double-buffer
             SendMessageW(lv_hwnd, 0x1000 + 54 /* LVM_SETEXTENDEDLISTVIEWSTYLE */, WPARAM(0x00010000), LPARAM(0x00010000));
 
-            // Header: untheme so custom paint works reliably
+            // Header: set theme instead of untheme to ensure empty spacer area uses modern dark colors
             let header = SendMessageW(lv_hwnd, 0x1000 + 31 /* LVM_GETHEADER */, WPARAM(0), LPARAM(0));
             if header.0 != 0 {
                 let hh = HWND(header.0 as _);
-                clear_control_theme(hh);
+                set_control_theme(hh, dark);
                 let _ = InvalidateRect(hh, None, true);
             }
 
@@ -3160,6 +3952,15 @@ impl JGrepApp {
                 let sbh = HWND(sb as _);
                 SendMessageW(sbh, 0x2001 /* SB_SETBKCOLOR */, WPARAM(0), LPARAM(bg as isize));
                 let _ = InvalidateRect(sbh, None, true);
+            }
+
+            // Progress bar theme
+            if let Some(pb) = self.progress_bar.handle.hwnd() {
+                let pbh = HWND(pb as _);
+                clear_control_theme(pbh);
+                let dark_val = if dark { 1 } else { 0 };
+                let _ = SetWindowSubclass(pbh, progress_bar_subclass_proc, 1001, dark_val);
+                let _ = InvalidateRect(pbh, None, true);
             }
         }
 
@@ -3217,23 +4018,23 @@ impl JGrepApp {
             return;
         }
 
-        let top_offset = 15;
+        let top_offset = 5;
         let status_height = 25;
         let main_height = h - top_offset - status_height;
 
         let left_width = *self.left_width.borrow();
 
         // Left Pane - TreeView
-        self.tree_view.set_position(10, top_offset);
-        self.tree_view.set_size(left_width as u32, (main_height - 15) as u32);
+        self.tree_view.set_position(4, top_offset);
+        self.tree_view.set_size(left_width as u32, (main_height - 5) as u32);
 
         // Splitter Bar
-        self.splitter_bar.set_position(left_width + 10, top_offset);
-        self.splitter_bar.set_size(6, (main_height - 15) as u32);
+        self.splitter_bar.set_position(left_width + 7, top_offset);
+        self.splitter_bar.set_size(4, (main_height - 5) as u32);
 
         // Right Pane
-        let right_x = left_width + 22; // tree_width + splitter gap
-        let right_width = w - right_x - 10;
+        let right_x = left_width + 14; // tree_width + margins
+        let right_width = w - right_x - 4;
 
         // Configuration panel (fields layout)
         let config_height = 155;
@@ -3241,11 +4042,12 @@ impl JGrepApp {
 
         // ListView Result Grid
         let list_y = top_offset + config_height + 5;
-        let list_height = main_height - config_height - 20;
+        let list_height = main_height - config_height - 10;
         self.list_view.set_position(right_x, list_y);
         self.list_view.set_size(right_width as u32, list_height as u32);
         // Keep column proportions when the list width changes
         self.stretch_list_columns();
+        self.layout_progress_bar();
 
         // Force UI Repaint
         self.tree_view.invalidate();
@@ -3253,13 +4055,25 @@ impl JGrepApp {
         self.window.invalidate();
     }
 
+    fn layout_progress_bar(&self) {
+        let (w_u, h_u) = self.window.size();
+        let w = w_u as i32;
+        let h = h_u as i32;
+        let pb_w = 280;
+        let pb_h = 16;
+        let pb_x = w - pb_w - 20;
+        let pb_y = h - 25 + (25 - pb_h) / 2;
+        self.progress_bar.set_position(pb_x, pb_y);
+        self.progress_bar.set_size(pb_w as u32, pb_h as u32);
+    }
+
     fn layout_config_fields(&self, rx: i32, ry: i32, rw: i32) {
-        let lbl_w = 160; // Expanded to prevent wrapping
+        let lbl_w = 120; // Expanded to prevent wrapping
         let input_x = rx + lbl_w + 5;
         let input_w = rw - lbl_w - 5;
 
         // Row 1: Search Query & search button
-        let btn_w = 80;
+        let btn_w = 100;
         let query_w = input_w - (btn_w + 5);
 
         self.lbl_query.set_position(rx, ry);
@@ -3373,12 +4187,12 @@ fn main() {
 
     // UI font from config (default: Meiryo UI)
     let cfg = load_config();
-    let font_size = if cfg.font_size == 0 {
+    let font_size = if cfg.appearance.font_size == 0 {
         DEFAULT_UI_FONT_SIZE
     } else {
-        cfg.font_size
+        cfg.appearance.font_size
     };
-    let font = build_ui_font(&cfg.font_family, font_size);
+    let font = build_ui_font(&cfg.appearance.font_family, font_size);
     nwg::Font::set_global_default(Some(font));
 
     let app = JGrepApp::build_ui(Default::default()).expect("Failed to build GUI application");

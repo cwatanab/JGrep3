@@ -66,7 +66,7 @@ target/release/JGrep3.exe
 
 - ファイル名
 - 行番号
-- 内容（マッチ箇所は `【】` で強調）
+- 内容（検索文字列を色付きでハイライト）
 
 列ヘッダをクリックするとソートできます。行をダブルクリックすると、設定した外部エディタ（未設定時は VS Code、なければ関連付けアプリ）で該当位置を開きます。
 
@@ -92,32 +92,35 @@ target/release/JGrep3.exe
 読み込みは上の順。保存は読み込んだ場所へ上書きし、どちらも無い場合は AppData に新規作成します。
 
 ```toml
+[appearance]
 theme = 0
-editor_path = ""
-editor_args = ""
 font_family = "Meiryo UI"
 font_size = 16
 list_font_family = "Cascadia Code"
 list_font_size = 14
+
+[editor]
+path = ""
+args = ""
+
+[layout]
 tree_width = 240
 col_filename_width = 350
 col_line_width = 60
 col_content_width = 450
 window_width = 1000
 window_height = 680
-# window_x / window_y は任意（省略時は既定位置）
-history_query = []
-history_dir = []
-history_file_mask = []
-history_dir_mask = []
+# window_x / window_y は任意
+
+[history]
+query = []
+dir = []
+file_mask = []
+dir_mask = []
 ```
 
-- `theme`: `0`=システム, `1`=ライト, `2`=ダーク
-- `font_family`: UIフォント名（既定 `Meiryo UI`）
-- `font_size`: UIフォントサイズ（既定 `16`）
-- `list_font_family`: 結果リストフォント名（既定 `Cascadia Code`）
-- `list_font_size`: 結果リストフォントサイズ（既定 `14`）
-- 検索文字列 / ディレクトリ / マスクはコンボボックスで、検索実行時に履歴（最大100件）が保存されます
+- `appearance.theme`: `0`=システム, `1`=ライト, `2`=ダーク
+- `history.*`: 検索履歴（最大100件）
 
 ## プロジェクト構成
 

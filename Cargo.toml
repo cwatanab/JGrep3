@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-native-windows-gui = { version = "1.0.12", features = ["combobox", "list-view", "tree-view", "menu", "status-bar", "image-list", "flexbox", "cursor", "file-dialog", "frame", "high-dpi"] }
+native-windows-gui = { version = "1.0.12", features = ["combobox", "list-view", "tree-view", "menu", "status-bar", "image-list", "flexbox", "cursor", "file-dialog", "frame", "high-dpi", "progress-bar"] }
 native-windows-derive = "1.0.5"
 regex = "1.10"
 walkdir = "2.5"
