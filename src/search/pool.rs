@@ -6,6 +6,12 @@ use std::time::Instant;
 
 use native_windows_gui::NoticeSender;
 
+fn notify(notice: &Option<NoticeSender>) {
+    if let Some(n) = notice {
+        n.notice();
+    }
+}
+
 use super::decode::read_and_decode_file;
 use super::glob_mask::{parse_dir_masks, parse_file_masks};
 use super::match_engine::Matcher;
@@ -26,7 +32,7 @@ pub fn run(
     auto_detect_encoding: bool,
     cancellation_token: Arc<AtomicBool>,
     sender: Sender<SearchStatus>,
-    notice_sender: NoticeSender,
+    notice_sender: Option<NoticeSender>,
 ) {
     let start = Instant::now();
 
@@ -35,7 +41,7 @@ pub fn run(
             Ok(m) => Arc::new(m),
             Err(e) => {
                 let _ = sender.send(SearchStatus::Error(format!("Invalid regex: {}", e)));
-                notice_sender.notice();
+                notify(&notice_sender);
                 return;
             }
         }
@@ -44,7 +50,7 @@ pub fn run(
             Ok(m) => Arc::new(m),
             Err(e) => {
                 let _ = sender.send(SearchStatus::Error(format!("Invalid query: {}", e)));
-                notice_sender.notice();
+                notify(&notice_sender);
                 return;
             }
         }
@@ -54,7 +60,7 @@ pub fn run(
         Ok(m) => m,
         Err(e) => {
             let _ = sender.send(SearchStatus::Error(format!("Invalid file mask: {}", e)));
-            notice_sender.notice();
+            notify(&notice_sender);
             return;
         }
     };
@@ -62,7 +68,7 @@ pub fn run(
         Ok(m) => m,
         Err(e) => {
             let _ = sender.send(SearchStatus::Error(format!("Invalid dir mask: {}", e)));
-            notice_sender.notice();
+            notify(&notice_sender);
             return;
         }
     };
@@ -114,7 +120,7 @@ pub fn run(
                 let n = scanned.fetch_add(1, Ordering::Relaxed) + 1;
                 if n % PROGRESS_EVERY == 0 {
                     let _ = sender.send(SearchStatus::Progress { scanned_files: n });
-                    notice_sender.notice();
+                    notify(&notice_sender);
                 }
 
                 let content = match read_and_decode_file(path, auto_detect_encoding) {
@@ -162,7 +168,7 @@ pub fn run(
 
 fn flush_batch(
     sender: &Sender<SearchStatus>,
-    notice: &NoticeSender,
+    notice: &Option<NoticeSender>,
     batch: &mut Vec<SearchResultItem>,
 ) {
     if batch.is_empty() {
@@ -171,12 +177,12 @@ fn flush_batch(
     for item in batch.drain(..) {
         let _ = sender.send(SearchStatus::Match(item));
     }
-    notice.notice();
+    notify(notice);
 }
 
 fn finish(
     sender: &Sender<SearchStatus>,
-    notice: &NoticeSender,
+    notice: &Option<NoticeSender>,
     start: Instant,
     total_scanned: usize,
     match_count: usize,
@@ -186,7 +192,7 @@ fn finish(
         total_scanned,
         match_count,
     });
-    notice.notice();
+    notify(notice);
 }
 
 fn truncate_line(line: &str, matcher: &Matcher) -> String {
