@@ -20,6 +20,7 @@ pub struct WalkConfig {
 }
 
 /// Collect matching file paths under root (single-threaded).
+#[allow(dead_code)]
 pub fn collect_files(root: &Path, cfg: &WalkConfig, cancel: &AtomicBool) -> Vec<PathBuf> {
     let mut out = Vec::new();
     walk_dir(root, cfg, cancel, &mut out);
