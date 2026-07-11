@@ -329,6 +329,29 @@ fn expand_editor_args(template: &str, file: &str, line: usize, column: usize) ->
         .collect()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_expand_editor_args() {
+        // 新しいプレースホルダー形式のテスト
+        let args = expand_editor_args("%FILENAME% --line %LINE% --col %COL%", "test.txt", 10, 5);
+        assert_eq!(args, vec!["test.txt", "--line", "10", "--col", "5"]);
+
+        let args_full = expand_editor_args("--file %FILE% --column %COLUMN%", "test.txt", 10, 5);
+        assert_eq!(args_full, vec!["--file", "test.txt", "--column", "5"]);
+
+        // 後方互換性（Legacy ドル記法）のテスト
+        let legacy_args = expand_editor_args("$f -l $l -c $c", "test.txt", 10, 5);
+        assert_eq!(legacy_args, vec!["test.txt", "-l", "10", "-c", "5"]);
+
+        // クォーテーションのテスト
+        let quoted_args = expand_editor_args("\"%FILENAME%\" --args", "test.txt", 10, 5);
+        assert_eq!(quoted_args, vec!["test.txt", "--args"]);
+    }
+}
+
 
 
 #[derive(Default, NwgUi)]
