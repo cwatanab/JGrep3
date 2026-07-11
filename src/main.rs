@@ -1503,10 +1503,28 @@ impl JGrepApp {
 
         if let Some(h) = self.window.handle.hwnd() {
             apply_font_to_hwnd_tree(HWND(h as _), hfont);
+            unsafe {
+                use windows::Win32::Graphics::Gdi::{RedrawWindow, RDW_INVALIDATE, RDW_UPDATENOW, RDW_ALLCHILDREN, RDW_ERASE};
+                let _ = RedrawWindow(
+                    HWND(h as _),
+                    None,
+                    None,
+                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_ERASE,
+                );
+            }
         }
         if let Some(ref dialog) = *self.setting_dialog.borrow() {
             if let Some(h) = dialog.window.handle.hwnd() {
                 apply_font_to_hwnd_tree(HWND(h as _), hfont);
+                unsafe {
+                    use windows::Win32::Graphics::Gdi::{RedrawWindow, RDW_INVALIDATE, RDW_UPDATENOW, RDW_ALLCHILDREN, RDW_ERASE};
+                    let _ = RedrawWindow(
+                        HWND(h as _),
+                        None,
+                        None,
+                        RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_ERASE,
+                    );
+                }
             }
         }
 
