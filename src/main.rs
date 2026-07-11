@@ -314,7 +314,12 @@ fn expand_editor_args(template: &str, file: &str, line: usize, column: usize) ->
 
     args.into_iter()
         .map(|a| {
-            a.replace("$f", file)
+            a.replace("%FILENAME%", file)
+                .replace("%FILE%", file)
+                .replace("%LINE%", &line_s)
+                .replace("%COLUMN%", &col_s)
+                .replace("%COL%", &col_s)
+                .replace("$f", file)
                 .replace("$F", file)
                 .replace("$l", &line_s)
                 .replace("$L", &line_s)
@@ -1033,9 +1038,9 @@ impl JGrepApp {
                             let state = udmi.dis.itemState.0;
 
                             let (bg_color, fg_color) = if (state & ODS_SELECTED) != 0 {
-                                (0x003A3A3A, CLR_DARK_FG)
+                                (0x00505050, CLR_DARK_FG) // Selected state: clearer contrast with lighter gray
                             } else if (state & ODS_HOTLIGHT) != 0 {
-                                (0x002D2D2D, CLR_DARK_FG)
+                                (0x003C3C3C, CLR_DARK_FG) // Hover state: clearly distinguishable from the dark background
                             } else if (state & (ODS_GRAYED | ODS_DISABLED)) != 0 {
                                 (CLR_DARK_BG, 0x00808080)
                             } else {
@@ -1066,6 +1071,7 @@ impl JGrepApp {
                             let ret = DefWindowProcW(HWND(hwnd as _), msg, WPARAM(wparam), LPARAM(lparam));
                             let p_mmi_mut = lparam as *mut UAHMEASUREMENUITEM;
                             (*p_mmi_mut).mis.itemWidth = (((*p_mmi_mut).mis.itemWidth as u32) * 4 / 3) as u32;
+                            (*p_mmi_mut).mis.itemHeight = (((*p_mmi_mut).mis.itemHeight as u32) * 5 / 4) as u32;
                             return Some(ret.0 as isize);
                         }
                     }
@@ -2184,10 +2190,15 @@ impl JGrepApp {
                     }
                 }
 
-                // Buttons
+                // Buttons & TextInputs & ComboBoxes
                 for h in [
+                    &dialog.txt_editor_path.handle,
+                    &dialog.txt_editor_args.handle,
                     &dialog.btn_editor_browse.handle,
                     &dialog.btn_close.handle,
+                    &dialog.btn_help_filename.handle,
+                    &dialog.btn_help_line.handle,
+                    &dialog.btn_help_col.handle,
                 ] {
                     if let Some(r) = h.hwnd() {
                         set_control_theme(HWND(r as _), dark);
@@ -2205,7 +2216,9 @@ impl JGrepApp {
                     &dialog.lbl_editor.handle,
                     &dialog.lbl_editor_path.handle,
                     &dialog.lbl_editor_args.handle,
-                    &dialog.lbl_editor_args_help.handle,
+                    &dialog.lbl_help_filename_desc.handle,
+                    &dialog.lbl_help_line_desc.handle,
+                    &dialog.lbl_help_col_desc.handle,
                 ] {
                     if let Some(r) = h.hwnd() {
                         clear_control_theme(HWND(r as _));
