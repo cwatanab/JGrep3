@@ -87,7 +87,6 @@ target/release/JGrep3.exe
   - `%FILENAME%` (または `%FILE%`) … ファイルパス
   - `%LINE%` … 行番号
   - `%COL%` (または `%COLUMN%`) … 列番号
-  - （※ 従来の `$f`, `$l`, `$c` も引き続き使用可能です）
 
 設定は TOML ファイルに保存されます（ポータブル優先）。
 

@@ -289,7 +289,7 @@ impl HistoryCombo {
     }
 }
 
-/// Expand editor argument template. Placeholders: $f=file, $l=line, $c=column
+/// Expand editor argument template. Placeholders: %FILENAME%=file, %LINE%=line, %COL%=column
 fn expand_editor_args(template: &str, file: &str, line: usize, column: usize) -> Vec<String> {
     let line_s = line.to_string();
     let col_s = column.to_string();
@@ -319,12 +319,6 @@ fn expand_editor_args(template: &str, file: &str, line: usize, column: usize) ->
                 .replace("%LINE%", &line_s)
                 .replace("%COLUMN%", &col_s)
                 .replace("%COL%", &col_s)
-                .replace("$f", file)
-                .replace("$F", file)
-                .replace("$l", &line_s)
-                .replace("$L", &line_s)
-                .replace("$c", &col_s)
-                .replace("$C", &col_s)
         })
         .collect()
 }
@@ -341,10 +335,6 @@ mod tests {
 
         let args_full = expand_editor_args("--file %FILE% --column %COLUMN%", "test.txt", 10, 5);
         assert_eq!(args_full, vec!["--file", "test.txt", "--column", "5"]);
-
-        // 後方互換性（Legacy ドル記法）のテスト
-        let legacy_args = expand_editor_args("$f -l $l -c $c", "test.txt", 10, 5);
-        assert_eq!(legacy_args, vec!["test.txt", "-l", "10", "-c", "5"]);
 
         // クォーテーションのテスト
         let quoted_args = expand_editor_args("\"%FILENAME%\" --args", "test.txt", 10, 5);
