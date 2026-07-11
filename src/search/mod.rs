@@ -22,6 +22,7 @@ pub struct SearchResultItem {
 #[derive(Debug, Clone)]
 pub enum SearchStatus {
     Match(SearchResultItem),
+    Matches(Vec<SearchResultItem>),
     Progress { scanned_files: usize },
     Completed {
         elapsed_ms: u64,

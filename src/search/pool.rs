@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc::Sender, Arc};
 use std::thread;
@@ -12,11 +14,99 @@ fn notify(notice: &Option<NoticeSender>) {
     }
 }
 
-use super::decode::read_and_decode_file;
+use super::decode::{looks_binary, read_and_decode_file};
 use super::glob_mask::{parse_dir_masks, parse_file_masks};
 use super::match_engine::Matcher;
 use super::walk::{collect_files, WalkConfig};
 use super::{SearchResultItem, SearchStatus};
+
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+fn find_subsequence_case_insensitive(haystack: &[u8], needle_lower: &[u8]) -> Option<usize> {
+    let n = needle_lower.len();
+    haystack.windows(n).position(|w| {
+        w.iter()
+            .zip(needle_lower.iter())
+            .all(|(a, b)| a.to_ascii_lowercase() == *b)
+    })
+}
+
+fn search_bytes(
+    buf: &[u8],
+    matcher: &Matcher,
+    path: &Path,
+    _auto_detect: bool,
+    batch: &mut Vec<SearchResultItem>,
+    match_count: &AtomicUsize,
+) -> bool {
+    let (needle, case_sensitive, needle_lower) = match matcher {
+        Matcher::Literal {
+            needle,
+            case_sensitive,
+            needle_lower,
+        } => (needle, case_sensitive, needle_lower),
+        _ => return false,
+    };
+
+    let needle_bytes = needle.as_bytes();
+    if needle_bytes.iter().any(|&b| b >= 128) {
+        return false;
+    }
+
+    let needle_lower_bytes = needle_lower.as_ref().map(|s| s.as_bytes());
+
+    let mut line_idx: usize = 0;
+    let mut pos = 0;
+    while pos < buf.len() {
+        let line_start = pos;
+        let mut line_end = buf.len();
+        let mut found_newline = false;
+
+        for i in pos..buf.len() {
+            if buf[i] == b'\n' {
+                line_end = i;
+                pos = i + 1;
+                found_newline = true;
+                break;
+            }
+        }
+        if !found_newline {
+            pos = buf.len();
+        }
+
+        let content_end = if line_end > 0 && buf[line_end.saturating_sub(1)] == b'\r' {
+            line_end.saturating_sub(1)
+        } else {
+            line_end
+        };
+
+        line_idx += 1;
+
+        let content_bytes = &buf[line_start..content_end];
+
+        let hit_pos = if *case_sensitive {
+            find_subsequence(content_bytes, needle_bytes)
+        } else {
+            find_subsequence_case_insensitive(content_bytes, needle_lower_bytes.unwrap_or(needle_bytes))
+        };
+
+        if let Some(column) = hit_pos {
+            let lossy = String::from_utf8_lossy(content_bytes);
+            let line_content = truncate_line(&lossy, matcher);
+            batch.push(SearchResultItem {
+                file_path: path.to_string_lossy().into_owned(),
+                line_number: line_idx,
+                column_number: column + 1,
+                line_content,
+            });
+            match_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    true
+}
 
 const MATCH_BATCH: usize = 32;
 const PROGRESS_EVERY: usize = 50;
@@ -108,6 +198,7 @@ pub fn run(
 
         handles.push(thread::spawn(move || {
             let mut batch: Vec<SearchResultItem> = Vec::with_capacity(MATCH_BATCH);
+            let mut buf: Vec<u8> = Vec::new();
             loop {
                 if cancel.load(Ordering::Relaxed) {
                     break;
@@ -121,6 +212,32 @@ pub fn run(
                 if n % PROGRESS_EVERY == 0 {
                     let _ = sender.send(SearchStatus::Progress { scanned_files: n });
                     notify(&notice_sender);
+                }
+
+                buf.clear();
+                let mut file = match File::open(path) {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
+                if file.read_to_end(&mut buf).is_err() {
+                    continue;
+                }
+                if looks_binary(&buf) {
+                    continue;
+                }
+
+                if search_bytes(
+                    &buf,
+                    &matcher,
+                    path,
+                    auto_detect_encoding,
+                    &mut batch,
+                    &match_count,
+                ) {
+                    if batch.len() >= MATCH_BATCH {
+                        flush_batch(&sender, &notice_sender, &mut batch);
+                    }
+                    continue;
                 }
 
                 let content = match read_and_decode_file(path, auto_detect_encoding) {
@@ -174,9 +291,8 @@ fn flush_batch(
     if batch.is_empty() {
         return;
     }
-    for item in batch.drain(..) {
-        let _ = sender.send(SearchStatus::Match(item));
-    }
+    let items = std::mem::take(batch);
+    let _ = sender.send(SearchStatus::Matches(items));
     notify(notice);
 }
 

@@ -3544,6 +3544,33 @@ impl JGrepApp {
 
                     self.result_file_map.borrow_mut().insert(idx, (item.file_path, item.line_number, item.column_number));
                 }
+                SearchStatus::Matches(items) => {
+                    for item in &items {
+                        self.search_results.borrow_mut().push(item.clone());
+
+                        let idx = self.list_view.len();
+                        self.list_view.insert_item(nwg::InsertListViewItem {
+                            index: Some(idx as i32),
+                            column_index: 0,
+                            text: Some(item.file_path.clone()),
+                            image: None,
+                        });
+                        self.list_view.update_item(idx, nwg::InsertListViewItem {
+                            index: Some(idx as i32),
+                            column_index: 1,
+                            text: Some(item.line_number.to_string()),
+                            image: None,
+                        });
+                        self.list_view.update_item(idx, nwg::InsertListViewItem {
+                            index: Some(idx as i32),
+                            column_index: 2,
+                            text: Some(item.line_content.clone()),
+                            image: None,
+                        });
+
+                        self.result_file_map.borrow_mut().insert(idx, (item.file_path.clone(), item.line_number, item.column_number));
+                    }
+                }
                 SearchStatus::Progress { scanned_files } => {
                     self.status_bar.set_text(0, &format!("検索中... (走査済みファイル数: {})", scanned_files));
                 }
