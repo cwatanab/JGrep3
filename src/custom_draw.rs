@@ -867,3 +867,75 @@ pub fn handle_theme_color_msg(
         _ => None,
     }
 }
+
+pub fn handle_treeview_custom_draw(
+    lparam: isize,
+    tv_hwnd: isize,
+    dark: bool,
+) -> Option<isize> {
+    use windows::Win32::Foundation::{HWND, COLORREF};
+    use windows::Win32::UI::Controls::NMTVCUSTOMDRAW;
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+
+    const NM_CUSTOMDRAW: u32 = (-12i32) as u32;
+    const CDDS_PREPAINT: u32 = 0x00000001;
+    const CDDS_ITEMPREPAINT: u32 = 0x00010001;
+    const CDRF_DODEFAULT: isize = 0x00000000;
+    const CDRF_NOTIFYITEMDRAW: isize = 0x00000020;
+    const CDRF_NEWFONT: isize = 0x00000002;
+    const CDIS_SELECTED: u32 = 0x0001;
+
+    let nm = lparam as *mut NMTVCUSTOMDRAW;
+    if nm.is_null() {
+        return None;
+    }
+    let cd = unsafe { &mut *nm };
+    if cd.nmcd.hdr.hwndFrom.0 as isize != tv_hwnd {
+        return None;
+    }
+    if cd.nmcd.hdr.code != NM_CUSTOMDRAW {
+        return None;
+    }
+
+    let stage = cd.nmcd.dwDrawStage.0;
+
+    match stage {
+        CDDS_PREPAINT => Some(CDRF_NOTIFYITEMDRAW),
+        CDDS_ITEMPREPAINT => {
+            let selected = (cd.nmcd.uItemState.0 & CDIS_SELECTED) != 0;
+            if selected {
+                // Clear selection state so control doesn't paint default bright blue highlight
+                cd.nmcd.uItemState.0 &= !CDIS_SELECTED;
+
+                let has_focus = unsafe { GetFocus().0 as isize == tv_hwnd };
+                if dark {
+                    if has_focus {
+                        cd.clrTextBk = COLORREF(0x008E5B26); // Active selection: distinct steel blue (RGB: 38, 91, 142)
+                        cd.clrText = COLORREF(0x00FFFFFF);   // White text
+                    } else {
+                        cd.clrTextBk = COLORREF(0x003A3A3A); // Inactive selection: charcoal gray (RGB: 58, 58, 58)
+                        cd.clrText = COLORREF(0x00CCCCCC);   // Light gray text
+                    }
+                } else {
+                    if has_focus {
+                        cd.clrTextBk = COLORREF(0x00FAD7B4); // Active selection: distinct soft sky blue (RGB: 180, 215, 250)
+                        cd.clrText = COLORREF(0x00000000);   // Black text
+                    } else {
+                        cd.clrTextBk = COLORREF(0x00E1E1E1); // Inactive selection: light gray (RGB: 225, 225, 225)
+                        cd.clrText = COLORREF(0x00555555);   // Medium gray text
+                    }
+                }
+            } else {
+                if dark {
+                    cd.clrTextBk = COLORREF(CLR_DARK_BG);
+                    cd.clrText = COLORREF(CLR_DARK_FG);
+                } else {
+                    cd.clrTextBk = COLORREF(CLR_LIGHT_BG);
+                    cd.clrText = COLORREF(CLR_LIGHT_FG);
+                }
+            }
+            Some(CDRF_NEWFONT)
+        }
+        _ => Some(CDRF_DODEFAULT),
+    }
+}

@@ -238,24 +238,7 @@ impl HistoryCombo {
         list
     }
 
-    fn set_position(&self, x: i32, y: i32) {
-        use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOSIZE, SWP_NOZORDER};
-        let Some(hwnd) = self.raw() else { return };
-        // Coordinates are logical (96-DPI); convert for HiDPI
-        let (x, y) = (dpi_px(x), dpi_px(y));
-        let _ = unsafe { SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER) };
-    }
 
-    fn set_size(&self, w: u32, h: u32) {
-        use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOMOVE, SWP_NOZORDER};
-        let Some(hwnd) = self.raw() else { return };
-        // Logical sizes → physical; keep extra height so the dropdown list has room
-        let w = dpi_px_u(w) as i32;
-        let h = dpi_px(h as i32) + dpi_px(200);
-        let _ = unsafe {
-            SetWindowPos(hwnd, None, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER)
-        };
-    }
 
     fn set_enabled(&self, enabled: bool) {
         use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
@@ -705,9 +688,14 @@ impl JGrepApp {
         // Lock window redraw immediately to prevent initial white flash of child controls
         if let Some(hwnd_raw) = self.window.handle.hwnd() {
             unsafe {
-                use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    GetWindowLongW, SetWindowLongW, GWL_STYLE, WS_CLIPCHILDREN, SendMessageW,
+                };
                 use windows::Win32::Foundation::{HWND, WPARAM, LPARAM};
-                let _ = SendMessageW(HWND(hwnd_raw as _), 0x000B /* WM_SETREDRAW */, WPARAM(0), LPARAM(0));
+                let hwnd = HWND(hwnd_raw as _);
+                let style = GetWindowLongW(hwnd, GWL_STYLE);
+                let _ = SetWindowLongW(hwnd, GWL_STYLE, style | WS_CLIPCHILDREN.0 as i32);
+                let _ = SendMessageW(hwnd, 0x000B /* WM_SETREDRAW */, WPARAM(0), LPARAM(0));
             }
         }
         // Load layout from config (logical units)
@@ -962,6 +950,7 @@ impl JGrepApp {
         let brushes = self.theme_brushes.clone();
         let highlight_cell = self.highlight.clone();
         let lv_hwnd_raw = self.list_view.handle.hwnd().map(|h| h as isize).unwrap_or(0);
+        let tv_hwnd_raw = self.tree_view.handle.hwnd().map(|h| h as isize).unwrap_or(0);
 
         let handler = nwg::bind_raw_event_handler(&self.window.handle, 0xFFFF + 1, move |hwnd, msg, wparam, lparam| {
             if msg == 0x0112 /* WM_SYSCOMMAND */ && wparam == 1001 {
@@ -969,7 +958,7 @@ impl JGrepApp {
                 return Some(0);
             }
 
-            // WM_NOTIFY — ListView custom draw (highlight + grid)
+            // WM_NOTIFY — ListView & TreeView custom draw (highlight + grid + tree selection)
             if msg == 0x004E && lparam != 0 {
                 let hl = highlight_cell.borrow();
                 if let Some(ret) = handle_listview_custom_draw(
@@ -977,6 +966,13 @@ impl JGrepApp {
                     lv_hwnd_raw,
                     *is_dark_cell.borrow(),
                     hl.as_ref(),
+                ) {
+                    return Some(ret);
+                }
+                if let Some(ret) = handle_treeview_custom_draw(
+                    lparam,
+                    tv_hwnd_raw,
+                    *is_dark_cell.borrow(),
                 ) {
                     return Some(ret);
                 }
@@ -2121,6 +2117,7 @@ impl JGrepApp {
         // TreeView: untheme so classic + / | hierarchy lines are drawn
         // (Explorer / DarkMode_Explorer uses modern chevron expanders instead)
         clear_control_theme(tv_hwnd);
+        set_scrollbar_theme(tv_hwnd, dark);
 
         // ListView: set theme
         set_control_theme(lv_hwnd, dark);
@@ -2375,28 +2372,116 @@ impl JGrepApp {
         let main_height = h - top_offset - status_height;
 
         let left_width = *self.left_width.borrow();
-
-        // Left Pane - TreeView
-        self.tree_view.set_position(4, top_offset);
-        self.tree_view.set_size(left_width as u32, (main_height - 5) as u32);
-
-        // Splitter Bar
-        self.splitter_bar.set_position(left_width + 7, top_offset);
-        self.splitter_bar.set_size(4, (main_height - 5) as u32);
-
-        // Right Pane
-        let right_x = left_width + 14; // tree_width + margins
+        
+        let right_x = left_width + 14;
         let right_width = w - right_x - 4;
-
-        // Configuration panel (fields layout)
+        
         let config_height = 155;
-        self.layout_config_fields(right_x, top_offset, right_width);
-
-        // ListView Result Grid
         let list_y = top_offset + config_height + 5;
         let list_height = main_height - config_height - 10;
-        self.list_view.set_position(right_x, list_y);
-        self.list_view.set_size(right_width as u32, list_height as u32);
+        
+        // Configuration fields calculation
+        let lbl_w = 120;
+        let input_x = right_x + lbl_w + 5;
+        let input_w = right_width - lbl_w - 5;
+        
+        let btn_w = 100;
+        let query_w = input_w - (btn_w + 5);
+        
+        let btn_br_w = 65;
+        let dir_w = input_w - btn_br_w - 5;
+        
+        let half_w = right_width / 2;
+        let dmask_lbl_x = right_x + half_w + 5;
+        
+        let cb_y1 = top_offset + 95;
+        let cb_w = right_width / 2 - 10;
+        let cb_y2 = top_offset + 125;
+
+        // Perform DeferWindowPos transaction
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{
+                BeginDeferWindowPos, DeferWindowPos, EndDeferWindowPos,
+                SWP_NOACTIVATE, SWP_NOZORDER, SWP_NOCOPYBITS,
+            };
+            use windows::Win32::Foundation::HWND;
+
+            if let Ok(mut hdwp) = BeginDeferWindowPos(15) {
+                let defer = |mut hdwp_val, hwnd: HWND, x: i32, y: i32, cx: i32, cy: i32| {
+                    if !hwnd.is_invalid() {
+                        if let Ok(new_hdwp) = DeferWindowPos(
+                            hdwp_val,
+                            hwnd,
+                            HWND::default(),
+                            dpi_px(x),
+                            dpi_px(y),
+                            dpi_px(cx),
+                            dpi_px(cy),
+                            SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOCOPYBITS,
+                        ) {
+                            hdwp_val = new_hdwp;
+                        }
+                    }
+                    hdwp_val
+                };
+
+                let defer_combo = |mut hdwp_val, combo: &HistoryCombo, x: i32, y: i32, cx: i32, cy: i32| {
+                    if let Some(hwnd) = combo.raw() {
+                        let w_phys = dpi_px(cx);
+                        let h_phys = dpi_px(cy) + dpi_px(200);
+                        if let Ok(new_hdwp) = DeferWindowPos(
+                            hdwp_val,
+                            hwnd,
+                            HWND::default(),
+                            dpi_px(x),
+                            dpi_px(y),
+                            w_phys,
+                            h_phys,
+                            SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOCOPYBITS,
+                        ) {
+                            hdwp_val = new_hdwp;
+                        }
+                    }
+                    hdwp_val
+                };
+
+                let get_hwnd = |h: &nwg::ControlHandle| -> HWND {
+                    HWND(h.hwnd().unwrap_or(0 as _) as _)
+                };
+
+                // 1. TreeView
+                hdwp = defer(hdwp, get_hwnd(&self.tree_view.handle), 4, top_offset, left_width, main_height - 5);
+                // 2. Splitter Bar
+                hdwp = defer(hdwp, get_hwnd(&self.splitter_bar.handle), left_width + 7, top_offset, 4, main_height - 5);
+                // 3. ListView
+                hdwp = defer(hdwp, get_hwnd(&self.list_view.handle), right_x, list_y, right_width, list_height);
+
+                // Row 1
+                hdwp = defer(hdwp, get_hwnd(&self.lbl_query.handle), right_x, top_offset, lbl_w, 25);
+                hdwp = defer_combo(hdwp, &self.cb_query.borrow(), input_x, top_offset, query_w, 25);
+                hdwp = defer(hdwp, get_hwnd(&self.btn_search.handle), input_x + query_w + 5, top_offset, btn_w, 25);
+
+                // Row 2
+                hdwp = defer(hdwp, get_hwnd(&self.lbl_dir.handle), right_x, top_offset + 30, lbl_w, 25);
+                hdwp = defer_combo(hdwp, &self.cb_dir.borrow(), input_x, top_offset + 30, dir_w, 25);
+                hdwp = defer(hdwp, get_hwnd(&self.btn_browse.handle), input_x + dir_w + 5, top_offset + 30, btn_br_w, 25);
+
+                // Row 3
+                hdwp = defer(hdwp, get_hwnd(&self.lbl_file_mask.handle), right_x, top_offset + 60, lbl_w, 25);
+                hdwp = defer_combo(hdwp, &self.cb_file_mask.borrow(), input_x, top_offset + 60, half_w - lbl_w - 10, 25);
+                hdwp = defer(hdwp, get_hwnd(&self.lbl_dir_mask.handle), dmask_lbl_x, top_offset + 60, lbl_w, 25);
+                hdwp = defer_combo(hdwp, &self.cb_dir_mask.borrow(), dmask_lbl_x + lbl_w + 5, top_offset + 60, right_width - (half_w + 5 + lbl_w + 5), 25);
+
+                // Checkboxes
+                hdwp = defer(hdwp, get_hwnd(&self.cb_recursive.handle), right_x, cb_y1, cb_w, 25);
+                hdwp = defer(hdwp, get_hwnd(&self.cb_case_sensitive.handle), right_x + half_w, cb_y1, cb_w, 25);
+                hdwp = defer(hdwp, get_hwnd(&self.cb_regex_disable.handle), right_x, cb_y2, cb_w, 25);
+                hdwp = defer(hdwp, get_hwnd(&self.cb_auto_detect_encoding.handle), right_x + half_w, cb_y2, cb_w, 25);
+
+                let _ = EndDeferWindowPos(hdwp);
+            }
+        }
+
         // Keep column proportions when the list width changes
         self.stretch_list_columns();
         self.layout_progress_bar();
@@ -2405,6 +2490,14 @@ impl JGrepApp {
         self.tree_view.invalidate();
         self.list_view.invalidate();
         self.window.invalidate();
+
+        // Force immediate synchronous redraw to eliminate trailing remnants during splitter dragging
+        if let Some(hwnd_raw) = self.window.handle.hwnd() {
+            unsafe {
+                use windows::Win32::Graphics::Gdi::UpdateWindow;
+                let _ = UpdateWindow(windows::Win32::Foundation::HWND(hwnd_raw as _));
+            }
+        }
     }
 
     fn layout_progress_bar(&self) {
@@ -2419,62 +2512,7 @@ impl JGrepApp {
         self.progress_bar.set_size(pb_w as u32, pb_h as u32);
     }
 
-    fn layout_config_fields(&self, rx: i32, ry: i32, rw: i32) {
-        let lbl_w = 120; // Expanded to prevent wrapping
-        let input_x = rx + lbl_w + 5;
-        let input_w = rw - lbl_w - 5;
 
-        // Row 1: Search Query & search button
-        let btn_w = 100;
-        let query_w = input_w - (btn_w + 5);
-
-        self.lbl_query.set_position(rx, ry);
-        self.lbl_query.set_size(lbl_w as u32, 25);
-        self.cb_query.borrow().set_position(input_x, ry);
-        self.cb_query.borrow().set_size(query_w as u32, 25);
-
-        self.btn_search.set_position(input_x + query_w + 5, ry);
-        self.btn_search.set_size(btn_w as u32, 25);
-
-        // Row 2: Search Directory (needs browse button)
-        let btn_br_w = 65;
-        let dir_w = input_w - btn_br_w - 5;
-        self.lbl_dir.set_position(rx, ry + 30);
-        self.lbl_dir.set_size(lbl_w as u32, 25);
-        self.cb_dir.borrow().set_position(input_x, ry + 30);
-        self.cb_dir.borrow().set_size(dir_w as u32, 25);
-        self.btn_browse.set_position(input_x + dir_w + 5, ry + 30);
-        self.btn_browse.set_size(btn_br_w as u32, 25);
-
-        // Row 3: Masks
-        let half_w = rw / 2;
-        self.lbl_file_mask.set_position(rx, ry + 60);
-        self.lbl_file_mask.set_size(lbl_w as u32, 25);
-        self.cb_file_mask.borrow().set_position(input_x, ry + 60);
-        self.cb_file_mask.borrow().set_size((half_w - lbl_w - 10) as u32, 25);
-
-        let dmask_lbl_x = rx + half_w + 5;
-        self.lbl_dir_mask.set_position(dmask_lbl_x, ry + 60);
-        self.lbl_dir_mask.set_size(lbl_w as u32, 25);
-        self.cb_dir_mask.borrow().set_position(dmask_lbl_x + lbl_w + 5, ry + 60);
-        self.cb_dir_mask.borrow().set_size((rw - (half_w + 5 + lbl_w + 5)) as u32, 25);
-
-        // Checkboxes Layout (2x2 Grid)
-        let cb_y1 = ry + 95;
-        let cb_w = rw / 2 - 10;
-        self.cb_recursive.set_position(rx, cb_y1);
-        self.cb_recursive.set_size(cb_w as u32, 25);
-
-        self.cb_case_sensitive.set_position(rx + half_w, cb_y1);
-        self.cb_case_sensitive.set_size(cb_w as u32, 25);
-
-        let cb_y2 = ry + 125;
-        self.cb_regex_disable.set_position(rx, cb_y2);
-        self.cb_regex_disable.set_size(cb_w as u32, 25);
-
-        self.cb_auto_detect_encoding.set_position(rx + half_w, cb_y2);
-        self.cb_auto_detect_encoding.set_size(cb_w as u32, 25);
-    }
 }
 
 // Check if VS Code is globally available via CLI path

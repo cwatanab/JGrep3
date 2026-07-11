@@ -157,6 +157,20 @@ pub fn set_control_theme(hwnd: windows::Win32::Foundation::HWND, dark: bool) {
         } else {
             let _ = SetWindowTheme(hwnd, w!("Explorer"), None);
         }
+        allow_dark_mode_for_window(hwnd, dark);
+    }
+}
+
+pub fn set_scrollbar_theme(hwnd: windows::Win32::Foundation::HWND, dark: bool) {
+    use windows::Win32::UI::Controls::SetWindowTheme;
+    use windows::core::w;
+    unsafe {
+        if dark {
+            let _ = SetWindowTheme(hwnd, w!("DarkMode_Explorer"), w!("ScrollBar"));
+        } else {
+            let _ = SetWindowTheme(hwnd, w!("Explorer"), w!("ScrollBar"));
+        }
+        allow_dark_mode_for_window(hwnd, dark);
     }
 }
 
