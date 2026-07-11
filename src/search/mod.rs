@@ -1,16 +1,17 @@
 pub mod glob_mask;
 mod decode;
 mod match_engine;
+mod walk;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-use walkdir::WalkDir;
 
 use decode::read_and_decode_file;
-use glob_mask::{matches_file_masks, parse_dir_masks, parse_file_masks};
+use glob_mask::{parse_dir_masks, parse_file_masks};
 use match_engine::Matcher;
+use walk::{WalkConfig, collect_files};
 
 #[derive(Debug, Clone)]
 pub struct SearchResultItem {
@@ -84,56 +85,26 @@ pub fn run_search(
     let mut scanned_files = 0;
     let mut match_count = 0;
 
-    let walk_depth = if recursive { usize::MAX } else { 1 };
-    let walker = WalkDir::new(&search_dir)
-        .max_depth(walk_depth)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| {
-            // Always enter the search root
-            if e.depth() == 0 {
-                return true;
-            }
-            if !e.file_type().is_dir() {
-                return true;
-            }
-            let name = match e.file_name().to_str() {
-                Some(n) => n,
-                None => return false,
-            };
-            dir_masks.allow_dir(name)
-        });
+    let walk_cfg = WalkConfig {
+        recursive,
+        file_masks,
+        dir_masks,
+    };
+    let files = collect_files(&search_dir, &walk_cfg, &cancellation_token);
 
-    for entry in walker.filter_map(|e| e.ok()) {
-        // Check cancellation
+    for path in files {
         if cancellation_token.load(Ordering::Relaxed) {
             break;
         }
 
-        let path = entry.path();
-        if path.is_dir() {
-            continue;
-        }
-
-        // Apply file mask check
-        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-            if !matches_file_masks(file_name, &file_masks) {
-                continue;
-            }
-        } else {
-            continue;
-        }
-
         scanned_files += 1;
 
-        // Periodic progress update (every 50 files scanned)
         if scanned_files % 50 == 0 {
             let _ = sender.send(SearchStatus::Progress { scanned_files });
             notice_sender.notice();
         }
 
-        // Read and search inside file
-        let content = match read_and_decode_file(path, auto_detect_encoding) {
+        let content = match read_and_decode_file(&path, auto_detect_encoding) {
             Ok(Some(c)) => c,
             Ok(None) | Err(_) => continue,
         };
