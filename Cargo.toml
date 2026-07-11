@@ -17,3 +17,10 @@ windows = { version = "0.58", features = ["Win32_Storage_FileSystem", "Win32_Fou
 
 [build-dependencies]
 winres = "0.1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = "z"
