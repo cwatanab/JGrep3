@@ -821,13 +821,20 @@ impl JGrepApp {
 
         // Remove TVS_LINESATROOT style to hide the "+" or "-" button on the root node (Desktop)
         if let Some(tv_hwnd_raw) = self.tree_view.handle.hwnd() {
-            use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, SetWindowLongW, GWL_STYLE};
+            use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE};
+            use windows::Win32::UI::WindowsAndMessaging::{SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE};
             use windows::Win32::UI::Controls::TVS_LINESATROOT;
             let hwnd = windows::Win32::Foundation::HWND(tv_hwnd_raw as _);
             let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) };
             let new_style = style & !(TVS_LINESATROOT as i32);
             unsafe {
                 let _ = SetWindowLongW(hwnd, GWL_STYLE, new_style);
+                let _ = SetWindowPos(
+                    hwnd,
+                    windows::Win32::Foundation::HWND::default(),
+                    0, 0, 0, 0,
+                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
             }
         }
 
