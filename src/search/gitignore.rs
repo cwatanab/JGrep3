@@ -6,21 +6,31 @@
 use std::path::{Path, PathBuf};
 use regex::{Regex, RegexBuilder};
 
+/// .gitignore 内の単一の無視パターン（ルール）を表す。
 #[derive(Clone, Debug)]
 pub struct GitIgnoreRule {
+    /// マッチング判定に使用する正規表現
     pub regex: Regex,
+    /// 否定パターン（! プレフィックス）であるかどうか
     pub is_negation: bool,
+    /// ディレクトリのみを対象とするパターン（/ 末尾）であるかどうか
     pub is_dir_only: bool,
+    /// パース前の元のパターン文字列
     pub raw_pattern: String,
 }
 
+/// 特定のディレクトリ（`base_dir`）配下に適用される無視ルール群を表す。
 #[derive(Clone, Debug)]
 pub struct GitIgnore {
+    /// 無視ファイルが配置されているベースディレクトリの絶対パス
     pub base_dir: PathBuf,
+    /// パースされた無視ルールのリスト
     pub rules: Vec<GitIgnoreRule>,
 }
 
 /// 指定されたディレクトリ直下にある無視ファイル (.gitignore, .ignore, .rgignore) を読み込んでロードする。
+///
+/// 該当するファイルが存在しない場合は空のリストを返す。
 pub fn load_ignore_files(dir: &Path) -> Vec<GitIgnore> {
     let mut ignores = Vec::new();
     let names = [".gitignore", ".ignore", ".rgignore"];
@@ -84,6 +94,10 @@ impl GitIgnore {
     }
 }
 
+/// 指定された無視ルールの1行をパースし、有効なパターン文字列を取り出す。
+///
+/// 空行やコメント行 (`#` で始まる行) は除外される。
+/// エスケープされていない末尾のスペースは Git の仕様に基づきトリミングされる。
 fn parse_line(line: &str) -> Option<&str> {
     let trimmed_start = line.trim_start();
     if trimmed_start.is_empty() {
@@ -123,6 +137,10 @@ fn parse_line(line: &str) -> Option<&str> {
     Some(s)
 }
 
+/// .gitignore 形式のパターン文字列をマッチング用の正規表現（`Regex`）とフラグに変換する。
+///
+/// # 戻り値
+/// 変換に成功した場合は `Some((Regex, is_negation, is_dir_only))` を返す。
 fn gitignore_to_regex(mut pattern: &str) -> Option<(Regex, bool, bool)> {
     if pattern.is_empty() {
         return None;
@@ -223,13 +241,20 @@ fn gitignore_to_regex(mut pattern: &str) -> Option<(Regex, bool, bool)> {
     Some((re, is_negation, is_dir_only))
 }
 
+/// 統合された検索マスク（包含パターン・除外パターン）を保持し、走査パスのフィルタリングを行う構造体。
 #[derive(Clone, Debug, Default)]
 pub struct SearchFilter {
+    /// 包含対象となるパターンのリスト
     pub include_rules: Vec<GitIgnoreRule>,
+    /// 除外対象となるパターンのリスト ( JGrep 独自拡張として `!` プレフィックスで指定)
     pub exclude_rules: Vec<GitIgnoreRule>,
 }
 
 impl SearchFilter {
+    /// 指定された検索マスク文字列から `SearchFilter` インスタンスを構築する。
+    ///
+    /// マスク文字列はセミコロンやカンマ、スペースで複数パターンに分割され、
+    /// `!` で始まるパターンは除外ルールとしてパースされる。
     pub fn new(mask_str: &str) -> Self {
         let mut include_rules = Vec::new();
         let mut exclude_rules = Vec::new();
@@ -262,6 +287,10 @@ impl SearchFilter {
         }
     }
 
+    /// ディレクトリパスが除外ルールにマッチせず、探索を進めて良いかを判定する。
+    ///
+    /// # 引数
+    /// * `rel_path` - 検索のルートフォルダからの相対パス
     pub fn allow_dir(&self, rel_path: &Path) -> bool {
         let rel_path_str = rel_path.to_string_lossy().replace('\\', "/");
         for rule in &self.exclude_rules {
@@ -272,6 +301,10 @@ impl SearchFilter {
         true
     }
 
+    /// ファイルパスが検索フィルターの包含・除外条件を満たしているかを判定する。
+    ///
+    /// # 引数
+    /// * `rel_path` - 検索のルートフォルダからの相対パス
     pub fn allow_file(&self, rel_path: &Path) -> bool {
         let rel_path_str = rel_path.to_string_lossy().replace('\\', "/");
 
@@ -307,6 +340,7 @@ impl SearchFilter {
     }
 }
 
+/// 指定されたパスの親ディレクトリが、指定された正規表現にマッチするか再帰的にチェックする。
 fn has_matching_parent(rel_path: &Path, regex: &regex::Regex) -> bool {
     let mut parent = rel_path.parent();
     while let Some(p) = parent {
@@ -319,6 +353,9 @@ fn has_matching_parent(rel_path: &Path, regex: &regex::Regex) -> bool {
     false
 }
 
+/// 検索フィルター文字列を区切り文字（セミコロン、カンマ、スペース）で分割する。
+///
+/// 空の要素は取り除かれる。
 pub fn split_masks(s: &str) -> impl Iterator<Item = &str> {
     s.split(|c| c == ';' || c == ',' || c == ' ')
         .map(|p| p.trim())

@@ -18,14 +18,20 @@ use windows::core::PCWSTR;
 
 use super::gitignore::{load_ignore_files, GitIgnore, SearchFilter};
 
+/// ファイル走査の設定オプションを保持する構造体。
 #[derive(Clone)]
 pub struct WalkConfig {
+    /// サブディレクトリを再帰的に探索するかどうか
     pub recursive: bool,
+    /// ファイル・ディレクトリの包含・除外フィルター
     pub filter: SearchFilter,
+    /// .gitignore や .ignore 等の無視ファイルをロードして適用するかどうか
     pub apply_ignore_files: bool,
 }
 
-/// Collect matching file paths under root (single-threaded).
+/// 指定されたルートフォルダ配下のマッチするすべてのファイルを、単一スレッドで再帰的に走査・収集する。
+///
+/// 主にユニットテスト等の逐次処理が必要な場面で使用される。
 #[allow(dead_code)]
 pub fn collect_files(root: &Path, cfg: &WalkConfig, cancel: &AtomicBool) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -37,8 +43,9 @@ pub fn collect_files(root: &Path, cfg: &WalkConfig, cancel: &AtomicBool) -> Vec<
     out
 }
 
-/// Collect matching file paths under root, sending to channel as found.
-/// Top-level subdirectories are processed in parallel.
+/// 指定されたルートフォルダ配下のファイルを探索し、見つかったファイルをチャネル経由で即座に送信する。
+///
+/// ルート直下のサブディレクトリごとにワーカースレッドを起動し、並列で探索処理を行う。
 pub fn collect_files_parallel(
     root: &Path,
     cfg: WalkConfig,
@@ -109,6 +116,9 @@ pub fn collect_files_parallel(
     }
 }
 
+/// 指定されたディレクトリ内を探索し、マッチするファイルを再帰的に収集する。
+///
+/// 親ディレクトリ階層から引き継いだ無視ルールに、そのディレクトリ直下で見つかった無視ルールをマージして適用する。
 fn walk_dir(
     root: &Path,
     dir: &Path,
@@ -165,6 +175,7 @@ fn walk_dir(
     }
 }
 
+/// 指定されたパスがいずれかの無視ファイルルールにマッチして除外されるべきかを判定する。
 fn is_ignored(path: &Path, is_dir: bool, ignores: &[GitIgnore]) -> bool {
     ignores.iter().any(|gi| gi.is_ignored(path, is_dir))
 }
