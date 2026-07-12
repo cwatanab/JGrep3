@@ -910,14 +910,7 @@ impl JGrepApp {
             *self.cb_mask.borrow_mut() = HistoryCombo::create(parent, font_src);
             self.cb_query.borrow_mut().apply_history(&cfg.history.query, "");
             self.cb_dir.borrow_mut().apply_history(&cfg.history.dir, "");
-            
-            let mut mask_history = cfg.history.mask.clone();
-            if mask_history.is_empty() {
-                mask_history.push("*.*; !.git/".to_string());
-            } else if mask_history[0] == "*.*" {
-                mask_history[0] = "*.*; !.git/".to_string();
-            }
-            self.cb_mask.borrow_mut().apply_history(&mask_history, "*.*; !.git/");
+            self.cb_mask.borrow_mut().apply_history(&cfg.history.mask, "*.*; !.git/");
         }
 
         *self.setting_dialog.borrow_mut() = Some(dialog);
