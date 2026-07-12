@@ -265,18 +265,8 @@ impl SearchFilter {
     pub fn allow_dir(&self, rel_path: &Path) -> bool {
         let rel_path_str = rel_path.to_string_lossy().replace('\\', "/");
         for rule in &self.exclude_rules {
-            if rule.regex.is_match(&rel_path_str) {
+            if rule.regex.is_match(&rel_path_str) || has_matching_parent(rel_path, &rule.regex) {
                 return false;
-            }
-
-            // 親ディレクトリのチェック
-            let mut parent = rel_path.parent();
-            while let Some(p) = parent {
-                let p_str = p.to_string_lossy().replace('\\', "/");
-                if !p_str.is_empty() && rule.regex.is_match(&p_str) {
-                    return false;
-                }
-                parent = p.parent();
             }
         }
         true
@@ -287,18 +277,7 @@ impl SearchFilter {
 
         for rule in &self.exclude_rules {
             if rule.is_dir_only {
-                // 親ディレクトリがこのルールにマッチするかチェック
-                let mut parent = rel_path.parent();
-                let mut matched_parent = false;
-                while let Some(p) = parent {
-                    let p_str = p.to_string_lossy().replace('\\', "/");
-                    if !p_str.is_empty() && rule.regex.is_match(&p_str) {
-                        matched_parent = true;
-                        break;
-                    }
-                    parent = p.parent();
-                }
-                if matched_parent {
+                if has_matching_parent(rel_path, &rule.regex) {
                     return false;
                 }
             } else {
@@ -326,6 +305,18 @@ impl SearchFilter {
 
         true
     }
+}
+
+fn has_matching_parent(rel_path: &Path, regex: &regex::Regex) -> bool {
+    let mut parent = rel_path.parent();
+    while let Some(p) = parent {
+        let p_str = p.to_string_lossy().replace('\\', "/");
+        if !p_str.is_empty() && regex.is_match(&p_str) {
+            return true;
+        }
+        parent = p.parent();
+    }
+    false
 }
 
 pub fn split_masks(s: &str) -> impl Iterator<Item = &str> {

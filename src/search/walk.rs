@@ -71,15 +71,7 @@ pub fn collect_files_parallel(
             let path = root.join(&name);
             let rel_path = path.strip_prefix(root).unwrap_or(&path);
 
-            let mut is_ignored_by_file = false;
-            for gi in &root_ignores {
-                if gi.is_ignored(&path, is_dir) {
-                    is_ignored_by_file = true;
-                    break;
-                }
-            }
-
-            if !is_ignored_by_file {
+            if !is_ignored(&path, is_dir, &root_ignores) {
                 if is_dir {
                     if cfg.recursive && cfg.filter.allow_dir(rel_path) {
                         let cfg = cfg.clone();
@@ -154,15 +146,7 @@ fn walk_dir(
             let path = dir.join(&name);
             let rel_path = path.strip_prefix(root).unwrap_or(&path);
 
-            let mut is_ignored_by_file = false;
-            for gi in &current_ignores {
-                if gi.is_ignored(&path, is_dir) {
-                    is_ignored_by_file = true;
-                    break;
-                }
-            }
-
-            if !is_ignored_by_file {
+            if !is_ignored(&path, is_dir, &current_ignores) {
                 if is_dir {
                     if cfg.recursive && cfg.filter.allow_dir(rel_path) {
                         walk_dir(root, &path, cfg, cancel, &current_ignores, out);
@@ -179,6 +163,10 @@ fn walk_dir(
     unsafe {
         let _ = FindClose(handle);
     }
+}
+
+fn is_ignored(path: &Path, is_dir: bool, ignores: &[GitIgnore]) -> bool {
+    ignores.iter().any(|gi| gi.is_ignored(path, is_dir))
 }
 
 fn path_to_wide(path: &Path) -> Vec<u16> {
