@@ -687,8 +687,8 @@ pub fn handle_listview_custom_draw(
             }
 
             // Custom draw only for the content column (2) when NOT selected, to highlight match keywords.
-            if cd.iSubItem == 2 {
-                if let Some(hl) = highlight {
+            if cd.iSubItem == 2
+                && let Some(hl) = highlight {
                     let item = cd.nmcd.dwItemSpec as i32;
                     let text = lv_get_subitem_text(lv_hwnd, item, 2);
                     let ranges = find_highlight_ranges(&text, hl);
@@ -697,7 +697,6 @@ pub fn handle_listview_custom_draw(
                     draw_highlighted_text(hdc, &text, &ranges, &rc, dark, false, lv_hwnd, false);
                     return Some(CDRF_SKIPDEFAULT);
                 }
-            }
 
             if dark {
                 cd.clrText = COLORREF(CLR_DARK_FG);
@@ -706,8 +705,8 @@ pub fn handle_listview_custom_draw(
             Some(CDRF_NEWFONT)
         }
         s if s == 0x00030002 => { // CDDS_SUBITEMPOSTPAINT
-            if cd.iSubItem == 2 {
-                if let Some(hl) = highlight {
+            if cd.iSubItem == 2
+                && let Some(hl) = highlight {
                     let item = cd.nmcd.dwItemSpec as i32;
                     let text = lv_get_subitem_text(lv_hwnd, item, 2);
                     let ranges = find_highlight_ranges(&text, hl);
@@ -718,7 +717,6 @@ pub fn handle_listview_custom_draw(
                         draw_postpaint_highlights(hdc, &text, &ranges, &rc, dark, selected);
                     }
                 }
-            }
             Some(CDRF_DODEFAULT)
         }
         CDDS_POSTPAINT => {

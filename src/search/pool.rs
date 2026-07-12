@@ -79,8 +79,8 @@ fn search_bytes(
 
             line_idx += 1;
 
-            if let Some(first_match) = matches.peek() {
-                if *first_match < line_end {
+            if let Some(first_match) = matches.peek()
+                && *first_match < line_end {
                     let content_bytes = &buf[line_start..content_end];
                     let column = finder.find(content_bytes).map(|c| c + 1).unwrap_or(1);
                     let lossy = String::from_utf8_lossy(content_bytes);
@@ -94,7 +94,6 @@ fn search_bytes(
                     match_count.fetch_add(1, Ordering::Relaxed);
                     while matches.next_if(|&m| m < line_end).is_some() {}
                 }
-            }
 
             if pos >= buf.len() {
                 break;
@@ -281,7 +280,7 @@ pub fn run(
                     }
                 };
                 let n = scanned.fetch_add(1, Ordering::Relaxed) + 1;
-                if n % PROGRESS_EVERY == 0 {
+                if n.is_multiple_of(PROGRESS_EVERY) {
                     let _ = sender.send(SearchStatus::Progress { scanned_files: n });
                     notify(&notice_sender);
                 }

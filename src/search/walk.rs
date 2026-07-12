@@ -96,11 +96,10 @@ pub fn collect_files_parallel(
                               }
                         }));
                     }
-                } else if cfg.filter.allow_file(rel_path) {
-                    if sender.send(path).is_err() {
+                } else if cfg.filter.allow_file(rel_path)
+                    && sender.send(path).is_err() {
                         break;
                     }
-                }
             }
         }
         if unsafe { FindNextFileW(handle, &mut data) }.is_err() {

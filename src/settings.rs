@@ -162,12 +162,11 @@ impl SettingsDialog {
     }
 
     fn handle_editor_browse(&self) {
-        if self.exe_dialog.run(Some(&self.window)) {
-            if let Ok(path) = self.exe_dialog.get_selected_item() {
+        if self.exe_dialog.run(Some(&self.window))
+            && let Ok(path) = self.exe_dialog.get_selected_item() {
                 self.txt_editor_path.set_text(&path.to_string_lossy());
                 self.save_settings();
             }
-        }
     }
 
     pub fn selected_font_family(&self) -> String {

@@ -36,11 +36,10 @@ pub fn load_ignore_files(dir: &Path) -> Vec<GitIgnore> {
     let names = [".gitignore", ".ignore", ".rgignore"];
     for name in &names {
         let path = dir.join(name);
-        if path.is_file() {
-            if let Ok(content) = std::fs::read_to_string(&path) {
+        if path.is_file()
+            && let Ok(content) = std::fs::read_to_string(&path) {
                 ignores.push(GitIgnore::new(dir.to_path_buf(), &content));
             }
-        }
     }
     ignores
 }
@@ -50,8 +49,8 @@ impl GitIgnore {
     pub fn new(base_dir: PathBuf, content: &str) -> Self {
         let mut rules = Vec::new();
         for line in content.lines() {
-            if let Some(parsed) = parse_line(line) {
-                if let Some((regex, is_negation, is_dir_only)) = gitignore_to_regex(parsed) {
+            if let Some(parsed) = parse_line(line)
+                && let Some((regex, is_negation, is_dir_only)) = gitignore_to_regex(parsed) {
                     rules.push(GitIgnoreRule {
                         regex,
                         is_negation,
@@ -59,7 +58,6 @@ impl GitIgnore {
                         raw_pattern: line.to_string(),
                     });
                 }
-            }
         }
         GitIgnore { base_dir, rules }
     }
@@ -164,14 +162,13 @@ fn gitignore_to_regex(mut pattern: &str) -> Option<(Regex, bool, bool)> {
         pattern = &pattern[1..];
     } else {
         let mut has_slash = false;
-        let mut chars = pattern.chars().enumerate();
-        while let Some((i, c)) = chars.next() {
-            if c == '/' {
-                if i == 0 || pattern.as_bytes()[i - 1] != b'\\' {
+        let chars = pattern.chars().enumerate();
+        for (i, c) in chars {
+            if c == '/'
+                && (i == 0 || pattern.as_bytes()[i - 1] != b'\\') {
                     has_slash = true;
                     break;
                 }
-            }
         }
         if has_slash {
             is_anchored = true;
@@ -357,7 +354,7 @@ fn has_matching_parent(rel_path: &Path, regex: &regex::Regex) -> bool {
 ///
 /// 空の要素は取り除かれる。
 pub fn split_masks(s: &str) -> impl Iterator<Item = &str> {
-    s.split(|c| c == ';' || c == ',' || c == ' ')
+    s.split([';', ',', ' '])
         .map(|p| p.trim())
         .filter(|p| !p.is_empty())
 }
