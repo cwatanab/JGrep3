@@ -455,15 +455,10 @@ pub struct JGrepApp {
     #[nwg_events(OnButtonClick: [JGrepApp::handle_browse])]
     btn_browse: nwg::Button,
 
-    #[nwg_control(text: "ファイルマスク(M):", size: (150, 25))]
-    lbl_file_mask: nwg::Label,
+    #[nwg_control(text: "検索フィルター(M):", size: (150, 25))]
+    lbl_mask: nwg::Label,
 
-    cb_file_mask: RefCell<HistoryCombo>,
-
-    #[nwg_control(text: "フォルダマスク(K):", size: (150, 25))]
-    lbl_dir_mask: nwg::Label,
-
-    cb_dir_mask: RefCell<HistoryCombo>,
+    cb_mask: RefCell<HistoryCombo>,
 
     // Checkboxes
     #[nwg_control(text: "サブディレクトリも検索対象(B)", check_state: nwg::CheckBoxState::Checked, size: (220, 25))]
@@ -477,6 +472,9 @@ pub struct JGrepApp {
 
     #[nwg_control(text: "文字コードを自動判別する(A)", check_state: nwg::CheckBoxState::Checked, size: (220, 25))]
     cb_auto_detect_encoding: nwg::CheckBox,
+
+    #[nwg_control(text: "無視ファイル(.gitignore等)を適用(I)", check_state: nwg::CheckBoxState::Checked, size: (240, 25))]
+    cb_ignore_files: nwg::CheckBox,
 
     // Right Pane - Search Results List (supports double click & column sorting)
     // GRID is drawn manually in NM_CUSTOMDRAW so dark/light grid colors can be controlled
@@ -909,14 +907,17 @@ impl JGrepApp {
             let font_src = HWND(self.lbl_query.handle.hwnd().unwrap() as _);
             *self.cb_query.borrow_mut() = HistoryCombo::create(parent, font_src);
             *self.cb_dir.borrow_mut() = HistoryCombo::create(parent, font_src);
-            *self.cb_file_mask.borrow_mut() = HistoryCombo::create(parent, font_src);
-            *self.cb_dir_mask.borrow_mut() = HistoryCombo::create(parent, font_src);
+            *self.cb_mask.borrow_mut() = HistoryCombo::create(parent, font_src);
             self.cb_query.borrow_mut().apply_history(&cfg.history.query, "");
             self.cb_dir.borrow_mut().apply_history(&cfg.history.dir, "");
-            self.cb_file_mask.borrow_mut().apply_history(&cfg.history.file_mask, "*.*");
-            self.cb_dir_mask
-                .borrow_mut()
-                .apply_history(&cfg.history.dir_mask, "**;!.git;!node_modules;!target");
+            
+            let mut mask_history = cfg.history.mask.clone();
+            if mask_history.is_empty() {
+                mask_history.push("*.*; !.git/".to_string());
+            } else if mask_history[0] == "*.*" {
+                mask_history[0] = "*.*; !.git/".to_string();
+            }
+            self.cb_mask.borrow_mut().apply_history(&mask_history, "*.*; !.git/");
         }
 
         *self.setting_dialog.borrow_mut() = Some(dialog);
@@ -1274,8 +1275,7 @@ impl JGrepApp {
             let label_handles: &[&nwg::ControlHandle] = &[
                 &self.lbl_query.handle,
                 &self.lbl_dir.handle,
-                &self.lbl_file_mask.handle,
-                &self.lbl_dir_mask.handle,
+                &self.lbl_mask.handle,
             ];
             let mut lbl_handlers = Vec::new();
             for (i, lbl) in label_handles.iter().enumerate() {
@@ -1412,8 +1412,7 @@ impl JGrepApp {
         for combo in [
             self.cb_query.borrow(),
             self.cb_dir.borrow(),
-            self.cb_file_mask.borrow(),
-            self.cb_dir_mask.borrow(),
+            self.cb_mask.borrow(),
         ] {
             if combo.hwnd != 0 {
                 key_handles.push(nwg::ControlHandle::Hwnd(combo.hwnd as _));
@@ -1531,8 +1530,7 @@ impl JGrepApp {
         let item_h = (size as i32 + 4).max(18);
         self.cb_query.borrow().set_item_height(item_h);
         self.cb_dir.borrow().set_item_height(item_h);
-        self.cb_file_mask.borrow().set_item_height(item_h);
-        self.cb_dir_mask.borrow().set_item_height(item_h);
+        self.cb_mask.borrow().set_item_height(item_h);
     }
 
     fn apply_list_font(&self, family: &str, size: u32) {
@@ -1757,20 +1755,17 @@ impl JGrepApp {
             return;
         }
 
-        let file_mask = self.cb_file_mask.borrow().text();
-        let dir_mask = self.cb_dir_mask.borrow().text();
+        let mask = self.cb_mask.borrow().text();
 
         // Update history (100 max) and persist to config
         let history_query = self.cb_query.borrow_mut().sync_history(&query);
         let history_dir = self.cb_dir.borrow_mut().sync_history(&search_dir_str);
-        let history_file_mask = self.cb_file_mask.borrow_mut().sync_history(&file_mask);
-        let history_dir_mask = self.cb_dir_mask.borrow_mut().sync_history(&dir_mask);
+        let history_mask = self.cb_mask.borrow_mut().sync_history(&mask);
         {
             let mut cfg = load_config();
             cfg.history.query = history_query;
             cfg.history.dir = history_dir;
-            cfg.history.file_mask = history_file_mask;
-            cfg.history.dir_mask = history_dir_mask;
+            cfg.history.mask = history_mask;
             if let Some(ref dialog) = *self.setting_dialog.borrow() {
                 cfg.editor.path = dialog.txt_editor_path.text();
                 cfg.editor.args = dialog.txt_editor_args.text();
@@ -1783,6 +1778,7 @@ impl JGrepApp {
         let case_sensitive = self.cb_case_sensitive.check_state() == nwg::CheckBoxState::Checked;
         let is_regex = self.cb_regex_disable.check_state() == nwg::CheckBoxState::Unchecked;
         let auto_detect = self.cb_auto_detect_encoding.check_state() == nwg::CheckBoxState::Checked;
+        let apply_ignore_files = self.cb_ignore_files.check_state() == nwg::CheckBoxState::Checked;
 
         // Clear previous results and reset sort states
         self.handle_clear_results();
@@ -1803,12 +1799,12 @@ impl JGrepApp {
             search::run_search(
                 search_dir,
                 query_for_search,
-                file_mask,
-                dir_mask,
+                mask,
                 recursive,
                 case_sensitive,
                 is_regex,
                 auto_detect,
+                apply_ignore_files,
                 cancel_token_clone,
                 tx,
                 notice_sender,
@@ -2130,6 +2126,7 @@ impl JGrepApp {
             &self.cb_case_sensitive.handle,
             &self.cb_regex_disable.handle,
             &self.cb_auto_detect_encoding.handle,
+            &self.cb_ignore_files.handle,
             &self.splitter_bar.handle,
         ];
         for h in controls {
@@ -2142,8 +2139,7 @@ impl JGrepApp {
         let labels: &[&nwg::ControlHandle] = &[
             &self.lbl_query.handle,
             &self.lbl_dir.handle,
-            &self.lbl_file_mask.handle,
-            &self.lbl_dir_mask.handle,
+            &self.lbl_mask.handle,
         ];
         for h in labels {
             if let Some(raw) = h.hwnd() {
@@ -2162,8 +2158,7 @@ impl JGrepApp {
         // Search history combos
         self.cb_query.borrow().apply_theme(dark);
         self.cb_dir.borrow().apply_theme(dark);
-        self.cb_file_mask.borrow().apply_theme(dark);
-        self.cb_dir_mask.borrow().apply_theme(dark);
+        self.cb_mask.borrow().apply_theme(dark);
 
         // Status bar: untheme so custom paint / SB_SETBKCOLOR work
         if let Some(sb) = self.status_bar.handle.hwnd() {
@@ -2394,13 +2389,13 @@ impl JGrepApp {
         self.cb_query.borrow().set_enabled(!searching);
         self.cb_dir.borrow().set_enabled(!searching);
         self.btn_browse.set_enabled(!searching);
-        self.cb_file_mask.borrow().set_enabled(!searching);
-        self.cb_dir_mask.borrow().set_enabled(!searching);
+        self.cb_mask.borrow().set_enabled(!searching);
         
         self.cb_recursive.set_enabled(!searching);
         self.cb_case_sensitive.set_enabled(!searching);
         self.cb_regex_disable.set_enabled(!searching);
         self.cb_auto_detect_encoding.set_enabled(!searching);
+        self.cb_ignore_files.set_enabled(!searching);
     }
 
     fn handle_resize(&self) {
@@ -2435,11 +2430,9 @@ impl JGrepApp {
         let btn_br_w = 65;
         let dir_w = input_w - btn_br_w - 5;
         
-        let half_w = right_width / 2;
-        let dmask_lbl_x = right_x + half_w + 5;
-        
+        let col_w = right_width / 3;
+        let cb_w = col_w - 10;
         let cb_y1 = top_offset + 95;
-        let cb_w = right_width / 2 - 10;
         let cb_y2 = top_offset + 125;
 
         // Perform DeferWindowPos transaction
@@ -2511,16 +2504,15 @@ impl JGrepApp {
                 hdwp = defer(hdwp, get_hwnd(&self.btn_browse.handle), input_x + dir_w + 5, top_offset + 30, btn_br_w, 25);
 
                 // Row 3
-                hdwp = defer(hdwp, get_hwnd(&self.lbl_file_mask.handle), right_x, top_offset + 60, lbl_w, 25);
-                hdwp = defer_combo(hdwp, &self.cb_file_mask.borrow(), input_x, top_offset + 60, half_w - lbl_w - 10, 25);
-                hdwp = defer(hdwp, get_hwnd(&self.lbl_dir_mask.handle), dmask_lbl_x, top_offset + 60, lbl_w, 25);
-                hdwp = defer_combo(hdwp, &self.cb_dir_mask.borrow(), dmask_lbl_x + lbl_w + 5, top_offset + 60, right_width - (half_w + 5 + lbl_w + 5), 25);
+                hdwp = defer(hdwp, get_hwnd(&self.lbl_mask.handle), right_x, top_offset + 60, lbl_w, 25);
+                hdwp = defer_combo(hdwp, &self.cb_mask.borrow(), input_x, top_offset + 60, input_w, 25);
 
                 // Checkboxes
                 hdwp = defer(hdwp, get_hwnd(&self.cb_recursive.handle), right_x, cb_y1, cb_w, 25);
-                hdwp = defer(hdwp, get_hwnd(&self.cb_case_sensitive.handle), right_x + half_w, cb_y1, cb_w, 25);
-                hdwp = defer(hdwp, get_hwnd(&self.cb_regex_disable.handle), right_x, cb_y2, cb_w, 25);
-                hdwp = defer(hdwp, get_hwnd(&self.cb_auto_detect_encoding.handle), right_x + half_w, cb_y2, cb_w, 25);
+                hdwp = defer(hdwp, get_hwnd(&self.cb_case_sensitive.handle), right_x + col_w, cb_y1, cb_w, 25);
+                hdwp = defer(hdwp, get_hwnd(&self.cb_regex_disable.handle), right_x + col_w * 2, cb_y1, cb_w, 25);
+                hdwp = defer(hdwp, get_hwnd(&self.cb_auto_detect_encoding.handle), right_x, cb_y2, cb_w, 25);
+                hdwp = defer(hdwp, get_hwnd(&self.cb_ignore_files.handle), right_x + col_w, cb_y2, cb_w, 25);
 
                 let _ = EndDeferWindowPos(hdwp);
             }

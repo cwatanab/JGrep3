@@ -199,9 +199,7 @@ pub struct HistoryConfig {
     #[serde(default)]
     pub dir: Vec<String>,
     #[serde(default)]
-    pub file_mask: Vec<String>,
-    #[serde(default)]
-    pub dir_mask: Vec<String>,
+    pub mask: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -243,12 +241,29 @@ impl Default for LayoutConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+fn default_editor_path() -> String {
+    "code.exe".to_string()
+}
+
+fn default_editor_args() -> String {
+    "-g %FILENAME%:%LINE%:%COL%".to_string()
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EditorConfig {
-    #[serde(default)]
+    #[serde(default = "default_editor_path")]
     pub path: String,
-    #[serde(default)]
+    #[serde(default = "default_editor_args")]
     pub args: String,
+}
+
+impl Default for EditorConfig {
+    fn default() -> Self {
+        Self {
+            path: default_editor_path(),
+            args: default_editor_args(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -338,6 +353,10 @@ pub fn save_config(cfg: &AppConfig) {
 }
 
 pub fn load_config() -> AppConfig {
+    load_config_raw()
+}
+
+fn load_config_raw() -> AppConfig {
     // 1. Portable: ./JGrep3.toml
     let portable = portable_config_path();
     if portable.is_file() {

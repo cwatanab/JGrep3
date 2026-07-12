@@ -3,7 +3,8 @@
 //! 並列ワーカプールによる高速全文検索。リテラル/正規表現マッチ、
 //! 文字コード自動判別、ファイル/フォルダマスクフィルタリングに対応。
 
-pub mod glob_mask;
+
+pub mod gitignore;
 mod decode;
 mod match_engine;
 mod pool;
@@ -40,12 +41,12 @@ pub enum SearchStatus {
 pub fn run_search(
     search_dir: PathBuf,
     search_query: String,
-    file_mask_str: String,
-    dir_mask_str: String,
+    mask_str: String,
     recursive: bool,
     case_sensitive: bool,
     is_regex: bool,
     auto_detect_encoding: bool,
+    apply_ignore_files: bool,
     cancellation_token: Arc<AtomicBool>,
     sender: Sender<SearchStatus>,
     notice_sender: NoticeSender,
@@ -53,12 +54,12 @@ pub fn run_search(
     pool::run(
         search_dir,
         search_query,
-        file_mask_str,
-        dir_mask_str,
+        mask_str,
         recursive,
         case_sensitive,
         is_regex,
         auto_detect_encoding,
+        apply_ignore_files,
         cancellation_token,
         sender,
         Some(notice_sender),
@@ -69,24 +70,24 @@ pub fn run_search(
 pub fn run_search_headless(
     search_dir: PathBuf,
     search_query: String,
-    file_mask_str: String,
-    dir_mask_str: String,
+    mask_str: String,
     recursive: bool,
     case_sensitive: bool,
     is_regex: bool,
     auto_detect_encoding: bool,
+    apply_ignore_files: bool,
 ) -> (u64, usize, usize) {
     let (tx, rx) = std::sync::mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     pool::run(
         search_dir,
         search_query,
-        file_mask_str,
-        dir_mask_str,
+        mask_str,
         recursive,
         case_sensitive,
         is_regex,
         auto_detect_encoding,
+        apply_ignore_files,
         cancel,
         tx,
         None,
