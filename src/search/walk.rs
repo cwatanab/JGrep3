@@ -16,31 +16,47 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::core::PCWSTR;
 
-use super::glob_mask::{matches_file_masks, DirMaskSet, FileMasks};
+use super::gitignore::{load_ignore_files, GitIgnore, SearchFilter};
 
+/// ファイル走査の設定オプションを保持する構造体。
 #[derive(Clone)]
 pub struct WalkConfig {
+    /// サブディレクトリを再帰的に探索するかどうか
     pub recursive: bool,
-    pub file_masks: FileMasks,
-    pub dir_masks: DirMaskSet,
+    /// ファイル・ディレクトリの包含・除外フィルター
+    pub filter: SearchFilter,
+    /// .gitignore や .ignore 等の無視ファイルをロードして適用するかどうか
+    pub apply_ignore_files: bool,
 }
 
-/// Collect matching file paths under root (single-threaded).
+/// 指定されたルートフォルダ配下のマッチするすべてのファイルを、単一スレッドで再帰的に走査・収集する。
+///
+/// 主にユニットテスト等の逐次処理が必要な場面で使用される。
 #[allow(dead_code)]
 pub fn collect_files(root: &Path, cfg: &WalkConfig, cancel: &AtomicBool) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    walk_dir(root, cfg, cancel, &mut out);
+    let mut ignores = Vec::new();
+    if cfg.apply_ignore_files {
+        ignores = load_ignore_files(root);
+    }
+    walk_dir(root, root, cfg, cancel, &ignores, &mut out);
     out
 }
 
-/// Collect matching file paths under root, sending to channel as found.
-/// Top-level subdirectories are processed in parallel.
+/// 指定されたルートフォルダ配下のファイルを探索し、見つかったファイルをチャネル経由で即座に送信する。
+///
+/// ルート直下のサブディレクトリごとにワーカースレッドを起動し、並列で探索処理を行う。
 pub fn collect_files_parallel(
     root: &Path,
     cfg: WalkConfig,
     cancel: Arc<AtomicBool>,
     sender: Sender<PathBuf>,
 ) {
+    let mut root_ignores = Vec::new();
+    if cfg.apply_ignore_files {
+        root_ignores = load_ignore_files(root);
+    }
+
     let pattern = root.join("*");
     let wide = path_to_wide(&pattern);
     let mut data = WIN32_FIND_DATAW::default();
@@ -60,25 +76,30 @@ pub fn collect_files_parallel(
         if name != "." && name != ".." {
             let is_dir = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0) != 0;
             let path = root.join(&name);
-            if is_dir {
-                if cfg.recursive && cfg.dir_masks.allow_dir(&name) {
-                    let cfg = cfg.clone();
-                    let cancel = Arc::clone(&cancel);
-                    let s = sender.clone();
-                    handles.push(thread::spawn(move || {
-                        let mut out = Vec::new();
-                        walk_dir(&path, &cfg, &cancel, &mut out);
-                        for p in out {
-                            if s.send(p).is_err() {
-                                break;
-                            }
-                        }
-                    }));
-                }
-            } else if matches_file_masks(&name, &cfg.file_masks) {
-                if sender.send(path).is_err() {
-                    break;
-                }
+            let rel_path = path.strip_prefix(root).unwrap_or(&path);
+
+            if !is_ignored(&path, is_dir, &root_ignores) {
+                if is_dir {
+                    if cfg.recursive && cfg.filter.allow_dir(rel_path) {
+                        let cfg = cfg.clone();
+                        let cancel = Arc::clone(&cancel);
+                        let s = sender.clone();
+                        let root_buf = root.to_path_buf();
+                        let root_ignores_clone = root_ignores.clone();
+                        handles.push(thread::spawn(move || {
+                            let mut out = Vec::new();
+                            walk_dir(&root_buf, &path, &cfg, &cancel, &root_ignores_clone, &mut out);
+                            for p in out {
+                                if s.send(p).is_err() {
+                                    break;
+                                }
+                              }
+                        }));
+                    }
+                } else if cfg.filter.allow_file(rel_path)
+                    && sender.send(path).is_err() {
+                        break;
+                    }
             }
         }
         if unsafe { FindNextFileW(handle, &mut data) }.is_err() {
@@ -94,9 +115,25 @@ pub fn collect_files_parallel(
     }
 }
 
-fn walk_dir(dir: &Path, cfg: &WalkConfig, cancel: &AtomicBool, out: &mut Vec<PathBuf>) {
+/// 指定されたディレクトリ内を探索し、マッチするファイルを再帰的に収集する。
+///
+/// 親ディレクトリ階層から引き継いだ無視ルールに、そのディレクトリ直下で見つかった無視ルールをマージして適用する。
+fn walk_dir(
+    root: &Path,
+    dir: &Path,
+    cfg: &WalkConfig,
+    cancel: &AtomicBool,
+    parent_ignores: &[GitIgnore],
+    out: &mut Vec<PathBuf>,
+) {
     if cancel.load(Ordering::Relaxed) {
         return;
+    }
+
+    let mut current_ignores = parent_ignores.to_vec();
+    if cfg.apply_ignore_files {
+        let local = load_ignore_files(dir);
+        current_ignores.extend(local);
     }
 
     let pattern = dir.join("*");
@@ -116,12 +153,16 @@ fn walk_dir(dir: &Path, cfg: &WalkConfig, cancel: &AtomicBool, out: &mut Vec<Pat
         if name != "." && name != ".." {
             let is_dir = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0) != 0;
             let path = dir.join(&name);
-            if is_dir {
-                if cfg.recursive && cfg.dir_masks.allow_dir(&name) {
-                    walk_dir(&path, cfg, cancel, &mut *out);
+            let rel_path = path.strip_prefix(root).unwrap_or(&path);
+
+            if !is_ignored(&path, is_dir, &current_ignores) {
+                if is_dir {
+                    if cfg.recursive && cfg.filter.allow_dir(rel_path) {
+                        walk_dir(root, &path, cfg, cancel, &current_ignores, out);
+                    }
+                } else if cfg.filter.allow_file(rel_path) {
+                    out.push(path);
                 }
-            } else if matches_file_masks(&name, &cfg.file_masks) {
-                out.push(path);
             }
         }
         if unsafe { FindNextFileW(handle, &mut data) }.is_err() {
@@ -131,6 +172,11 @@ fn walk_dir(dir: &Path, cfg: &WalkConfig, cancel: &AtomicBool, out: &mut Vec<Pat
     unsafe {
         let _ = FindClose(handle);
     }
+}
+
+/// 指定されたパスがいずれかの無視ファイルルールにマッチして除外されるべきかを判定する。
+fn is_ignored(path: &Path, is_dir: bool, ignores: &[GitIgnore]) -> bool {
+    ignores.iter().any(|gi| gi.is_ignored(path, is_dir))
 }
 
 fn path_to_wide(path: &Path) -> Vec<u16> {
@@ -149,7 +195,6 @@ fn wide_to_string(buf: &[u16]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::glob_mask::{parse_dir_masks, parse_file_masks};
     use std::fs;
     use std::sync::atomic::AtomicBool;
 
@@ -180,8 +225,8 @@ mod tests {
 
         let cfg = WalkConfig {
             recursive: false,
-            file_masks: parse_file_masks("*.txt").unwrap(),
-            dir_masks: parse_dir_masks("").unwrap(),
+            filter: SearchFilter::new("*.txt"),
+            apply_ignore_files: false,
         };
         let cancel = AtomicBool::new(false);
         let files = collect_files(&root, &cfg, &cancel);
@@ -201,8 +246,8 @@ mod tests {
 
         let cfg = WalkConfig {
             recursive: true,
-            file_masks: parse_file_masks("").unwrap(),
-            dir_masks: parse_dir_masks("**;!.git").unwrap(),
+            filter: SearchFilter::new("!.git/"),
+            apply_ignore_files: false,
         };
         let cancel = AtomicBool::new(false);
         let files = collect_files(&root, &cfg, &cancel);
@@ -231,8 +276,8 @@ mod tests {
 
         let cfg = WalkConfig {
             recursive: true,
-            file_masks: parse_file_masks("").unwrap(),
-            dir_masks: parse_dir_masks("").unwrap(),
+            filter: SearchFilter::new(""),
+            apply_ignore_files: false,
         };
         let cancel = AtomicBool::new(true);
         let files = collect_files(&root, &cfg, &cancel);
@@ -252,8 +297,8 @@ mod tests {
 
         let cfg = WalkConfig {
             recursive: true,
-            file_masks: parse_file_masks("*.rs").unwrap(),
-            dir_masks: parse_dir_masks("**;!.git").unwrap(),
+            filter: SearchFilter::new("*.rs; !.git/"),
+            apply_ignore_files: false,
         };
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = std::sync::mpsc::channel();
@@ -275,6 +320,40 @@ mod tests {
             paths,
             vec![
                 "lib/helper.rs".to_string(),
+                "src/main.rs".to_string(),
+            ]
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recursive_respects_ignore_files() {
+        let root = std::env::temp_dir().join("jgrep_walk_ignores");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        write_file(&root.join("root.txt"), "r");
+        write_file(&root.join("src").join("main.rs"), "m");
+        write_file(&root.join("src").join("nested").join("lib.rs"), "l");
+        write_file(&root.join("target").join("debug").join("app.exe"), "e");
+        write_file(&root.join(".ignore"), "target/\nsrc/nested/");
+
+        let cfg = WalkConfig {
+            recursive: true,
+            filter: SearchFilter::new(""),
+            apply_ignore_files: true,
+        };
+        let cancel = AtomicBool::new(false);
+        let files = collect_files(&root, &cfg, &cancel);
+        let mut paths: Vec<String> = files
+            .iter()
+            .map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"))
+            .collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                ".ignore".to_string(),
+                "root.txt".to_string(),
                 "src/main.rs".to_string(),
             ]
         );

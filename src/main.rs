@@ -38,19 +38,12 @@ pub struct SearchState {
 
 /// Editable history combobox (CBS_DROPDOWN). nwg's ComboBox is forced to
 /// CBS_DROPDOWNLIST and cannot accept free text, so we own the HWND ourselves.
+#[derive(Default)]
 struct HistoryCombo {
     hwnd: isize,
     items: Vec<String>,
 }
 
-impl Default for HistoryCombo {
-    fn default() -> Self {
-        Self {
-            hwnd: 0,
-            items: Vec::new(),
-        }
-    }
-}
 
 impl Drop for HistoryCombo {
     fn drop(&mut self) {
@@ -455,15 +448,10 @@ pub struct JGrepApp {
     #[nwg_events(OnButtonClick: [JGrepApp::handle_browse])]
     btn_browse: nwg::Button,
 
-    #[nwg_control(text: "ファイルマスク(M):", size: (150, 25))]
-    lbl_file_mask: nwg::Label,
+    #[nwg_control(text: "検索フィルター(M):", size: (150, 25))]
+    lbl_mask: nwg::Label,
 
-    cb_file_mask: RefCell<HistoryCombo>,
-
-    #[nwg_control(text: "フォルダマスク(K):", size: (150, 25))]
-    lbl_dir_mask: nwg::Label,
-
-    cb_dir_mask: RefCell<HistoryCombo>,
+    cb_mask: RefCell<HistoryCombo>,
 
     // Checkboxes
     #[nwg_control(text: "サブディレクトリも検索対象(B)", check_state: nwg::CheckBoxState::Checked, size: (220, 25))]
@@ -477,6 +465,9 @@ pub struct JGrepApp {
 
     #[nwg_control(text: "文字コードを自動判別する(A)", check_state: nwg::CheckBoxState::Checked, size: (220, 25))]
     cb_auto_detect_encoding: nwg::CheckBox,
+
+    #[nwg_control(text: "無視ファイル(.gitignore等)を適用(I)", check_state: nwg::CheckBoxState::Checked, size: (240, 25))]
+    cb_ignore_files: nwg::CheckBox,
 
     // Right Pane - Search Results List (supports double click & column sorting)
     // GRID is drawn manually in NM_CUSTOMDRAW so dark/light grid colors can be controlled
@@ -738,14 +729,13 @@ impl JGrepApp {
             unsafe {
                 let hinstance = GetModuleHandleW(None).unwrap_or_default();
                 // Resource ID 1 is embedded via winres
-                let hicon = LoadIconW(hinstance, PCWSTR(1 as *const u16));
-                if let Ok(hicon) = hicon {
-                    if !hicon.0.is_null() {
+                let hicon = LoadIconW(hinstance, PCWSTR(std::ptr::dangling::<u16>()));
+                if let Ok(hicon) = hicon
+                    && !hicon.0.is_null() {
                         let hwnd = HWND(hwnd_raw as _);
                         let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(hicon.0 as isize));
                         let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(hicon.0 as isize));
                     }
-                }
             }
         }
 
@@ -909,14 +899,10 @@ impl JGrepApp {
             let font_src = HWND(self.lbl_query.handle.hwnd().unwrap() as _);
             *self.cb_query.borrow_mut() = HistoryCombo::create(parent, font_src);
             *self.cb_dir.borrow_mut() = HistoryCombo::create(parent, font_src);
-            *self.cb_file_mask.borrow_mut() = HistoryCombo::create(parent, font_src);
-            *self.cb_dir_mask.borrow_mut() = HistoryCombo::create(parent, font_src);
+            *self.cb_mask.borrow_mut() = HistoryCombo::create(parent, font_src);
             self.cb_query.borrow_mut().apply_history(&cfg.history.query, "");
             self.cb_dir.borrow_mut().apply_history(&cfg.history.dir, "");
-            self.cb_file_mask.borrow_mut().apply_history(&cfg.history.file_mask, "*.*");
-            self.cb_dir_mask
-                .borrow_mut()
-                .apply_history(&cfg.history.dir_mask, "**;!.git;!node_modules;!target");
+            self.cb_mask.borrow_mut().apply_history(&cfg.history.mask, "*.*; !.git/");
         }
 
         *self.setting_dialog.borrow_mut() = Some(dialog);
@@ -1083,8 +1069,8 @@ impl JGrepApp {
                         unsafe {
                             let ret = DefWindowProcW(HWND(hwnd as _), msg, WPARAM(wparam), LPARAM(lparam));
                             let p_mmi_mut = lparam as *mut UAHMEASUREMENUITEM;
-                            (*p_mmi_mut).mis.itemWidth = (((*p_mmi_mut).mis.itemWidth as u32) * 4 / 3) as u32;
-                            (*p_mmi_mut).mis.itemHeight = (((*p_mmi_mut).mis.itemHeight as u32) * 5 / 4) as u32;
+                            (*p_mmi_mut).mis.itemWidth = ((*p_mmi_mut).mis.itemWidth * 4 / 3);
+                            (*p_mmi_mut).mis.itemHeight = ((*p_mmi_mut).mis.itemHeight * 5 / 4);
                             return Some(ret.0 as isize);
                         }
                     }
@@ -1274,8 +1260,7 @@ impl JGrepApp {
             let label_handles: &[&nwg::ControlHandle] = &[
                 &self.lbl_query.handle,
                 &self.lbl_dir.handle,
-                &self.lbl_file_mask.handle,
-                &self.lbl_dir_mask.handle,
+                &self.lbl_mask.handle,
             ];
             let mut lbl_handlers = Vec::new();
             for (i, lbl) in label_handles.iter().enumerate() {
@@ -1360,16 +1345,15 @@ impl JGrepApp {
                     unsafe { SetCapture(HWND(hwnd as _)); }
                     return Some(0);
                 }
-                0x0202 => { // WM_LBUTTONUP
-                    if is_dragging {
+                0x0202 // WM_LBUTTONUP
+                    if is_dragging => {
                         *is_dragging_cell.borrow_mut() = false;
                         unsafe { let _ = ReleaseCapture(); }
                         layout_save_sender.notice();
                         return Some(0);
                     }
-                }
-                0x0200 => { // WM_MOUSEMOVE
-                    if is_dragging {
+                0x0200 // WM_MOUSEMOVE
+                    if is_dragging => {
                         let mut pt = windows::Win32::Foundation::POINT::default();
                         unsafe {
                             let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt);
@@ -1387,7 +1371,6 @@ impl JGrepApp {
                         splitter_sender.notice();
                         return Some(0);
                     }
-                }
                 0x0020 => { // WM_SETCURSOR
                     unsafe {
                         let cursor = LoadCursorW(None, IDC_SIZEWE).unwrap();
@@ -1412,8 +1395,7 @@ impl JGrepApp {
         for combo in [
             self.cb_query.borrow(),
             self.cb_dir.borrow(),
-            self.cb_file_mask.borrow(),
-            self.cb_dir_mask.borrow(),
+            self.cb_mask.borrow(),
         ] {
             if combo.hwnd != 0 {
                 key_handles.push(nwg::ControlHandle::Hwnd(combo.hwnd as _));
@@ -1425,8 +1407,8 @@ impl JGrepApp {
 
         let mut handlers = Vec::new();
         for (i, ctrl) in key_handles.iter().enumerate() {
-            let ent_s = enter_sender.clone();
-            let esc_s = esc_sender.clone();
+            let ent_s = enter_sender;
+            let esc_s = esc_sender;
             let kh = nwg::bind_raw_event_handler(ctrl, 0xFFFF + 20 + i, move |_hwnd, msg, wparam, _lparam| {
                 if msg == 0x0087 /* WM_GETDLGCODE */ {
                     return Some(4 /* DLGC_WANTALLKEYS */);
@@ -1513,8 +1495,8 @@ impl JGrepApp {
                 );
             }
         }
-        if let Some(ref dialog) = *self.setting_dialog.borrow() {
-            if let Some(h) = dialog.window.handle.hwnd() {
+        if let Some(ref dialog) = *self.setting_dialog.borrow()
+            && let Some(h) = dialog.window.handle.hwnd() {
                 apply_font_to_hwnd_tree(HWND(h as _), hfont);
                 unsafe {
                     use windows::Win32::Graphics::Gdi::{RedrawWindow, RDW_INVALIDATE, RDW_UPDATENOW, RDW_ALLCHILDREN, RDW_ERASE};
@@ -1526,13 +1508,11 @@ impl JGrepApp {
                     );
                 }
             }
-        }
 
         let item_h = (size as i32 + 4).max(18);
         self.cb_query.borrow().set_item_height(item_h);
         self.cb_dir.borrow().set_item_height(item_h);
-        self.cb_file_mask.borrow().set_item_height(item_h);
-        self.cb_dir_mask.borrow().set_item_height(item_h);
+        self.cb_mask.borrow().set_item_height(item_h);
     }
 
     fn apply_list_font(&self, family: &str, size: u32) {
@@ -1688,9 +1668,9 @@ impl JGrepApp {
             path_map.get(&hitem).cloned()
         };
 
-        if let Some(path) = path {
-            if let Some(first_child) = self.tree_view.first_child(item) {
-                if self.tree_view.item_text(&first_child) == Some("__DUMMY__".to_string()) {
+        if let Some(path) = path
+            && let Some(first_child) = self.tree_view.first_child(item)
+                && self.tree_view.item_text(&first_child) == Some("__DUMMY__".to_string()) {
                     // Remove dummy and read actual directories
                     self.tree_view.remove_item(&first_child);
                     
@@ -1699,8 +1679,6 @@ impl JGrepApp {
                         self.add_directory_node(Some(item), &name, subpath, 4); // Normal folder icon = 4
                     }
                 }
-            }
-        }
     }
 
     fn handle_tree_select(&self, data: &nwg::EventData) {
@@ -1718,11 +1696,10 @@ impl JGrepApp {
     }
 
     fn handle_browse(&self) {
-        if self.dir_dialog.run(Some(&self.window)) {
-            if let Ok(path) = self.dir_dialog.get_selected_item() {
+        if self.dir_dialog.run(Some(&self.window))
+            && let Ok(path) = self.dir_dialog.get_selected_item() {
                 self.cb_dir.borrow().set_text(&path.to_string_lossy());
             }
-        }
     }
 
     fn handle_clear_results(&self) {
@@ -1757,20 +1734,17 @@ impl JGrepApp {
             return;
         }
 
-        let file_mask = self.cb_file_mask.borrow().text();
-        let dir_mask = self.cb_dir_mask.borrow().text();
+        let mask = self.cb_mask.borrow().text();
 
         // Update history (100 max) and persist to config
         let history_query = self.cb_query.borrow_mut().sync_history(&query);
         let history_dir = self.cb_dir.borrow_mut().sync_history(&search_dir_str);
-        let history_file_mask = self.cb_file_mask.borrow_mut().sync_history(&file_mask);
-        let history_dir_mask = self.cb_dir_mask.borrow_mut().sync_history(&dir_mask);
+        let history_mask = self.cb_mask.borrow_mut().sync_history(&mask);
         {
             let mut cfg = load_config();
             cfg.history.query = history_query;
             cfg.history.dir = history_dir;
-            cfg.history.file_mask = history_file_mask;
-            cfg.history.dir_mask = history_dir_mask;
+            cfg.history.mask = history_mask;
             if let Some(ref dialog) = *self.setting_dialog.borrow() {
                 cfg.editor.path = dialog.txt_editor_path.text();
                 cfg.editor.args = dialog.txt_editor_args.text();
@@ -1783,6 +1757,7 @@ impl JGrepApp {
         let case_sensitive = self.cb_case_sensitive.check_state() == nwg::CheckBoxState::Checked;
         let is_regex = self.cb_regex_disable.check_state() == nwg::CheckBoxState::Unchecked;
         let auto_detect = self.cb_auto_detect_encoding.check_state() == nwg::CheckBoxState::Checked;
+        let apply_ignore_files = self.cb_ignore_files.check_state() == nwg::CheckBoxState::Checked;
 
         // Clear previous results and reset sort states
         self.handle_clear_results();
@@ -1803,12 +1778,12 @@ impl JGrepApp {
             search::run_search(
                 search_dir,
                 query_for_search,
-                file_mask,
-                dir_mask,
+                mask,
                 recursive,
                 case_sensitive,
                 is_regex,
                 auto_detect,
+                apply_ignore_files,
                 cancel_token_clone,
                 tx,
                 notice_sender,
@@ -2011,12 +1986,12 @@ impl JGrepApp {
                 if is_vscode {
                     use std::os::windows::process::CommandExt;
                     let _ = std::process::Command::new("cmd")
-                        .args(&["/c", "code", "-g", &format!("{}:{}:{}", path_str, line_num, col_num)])
+                        .args(["/c", "code", "-g", &format!("{}:{}:{}", path_str, line_num, col_num)])
                         .creation_flags(0x08000000)
                         .spawn();
                 } else {
                     let _ = std::process::Command::new("cmd")
-                        .args(&["/c", "start", "", path_str])
+                        .args(["/c", "start", "", path_str])
                         .spawn();
                 }
             }
@@ -2130,6 +2105,7 @@ impl JGrepApp {
             &self.cb_case_sensitive.handle,
             &self.cb_regex_disable.handle,
             &self.cb_auto_detect_encoding.handle,
+            &self.cb_ignore_files.handle,
             &self.splitter_bar.handle,
         ];
         for h in controls {
@@ -2142,8 +2118,7 @@ impl JGrepApp {
         let labels: &[&nwg::ControlHandle] = &[
             &self.lbl_query.handle,
             &self.lbl_dir.handle,
-            &self.lbl_file_mask.handle,
-            &self.lbl_dir_mask.handle,
+            &self.lbl_mask.handle,
         ];
         for h in labels {
             if let Some(raw) = h.hwnd() {
@@ -2162,8 +2137,7 @@ impl JGrepApp {
         // Search history combos
         self.cb_query.borrow().apply_theme(dark);
         self.cb_dir.borrow().apply_theme(dark);
-        self.cb_file_mask.borrow().apply_theme(dark);
-        self.cb_dir_mask.borrow().apply_theme(dark);
+        self.cb_mask.borrow().apply_theme(dark);
 
         // Status bar: untheme so custom paint / SB_SETBKCOLOR work
         if let Some(sb) = self.status_bar.handle.hwnd() {
@@ -2171,8 +2145,8 @@ impl JGrepApp {
         }
 
         // Settings dialog
-        if let Some(ref dialog) = *self.setting_dialog.borrow() {
-            if let Some(raw) = dialog.window.handle.hwnd() {
+        if let Some(ref dialog) = *self.setting_dialog.borrow()
+            && let Some(raw) = dialog.window.handle.hwnd() {
                 let sh = HWND(raw as _);
                 apply_dark_titlebar(sh, dark);
                 unsafe {
@@ -2208,7 +2182,7 @@ impl JGrepApp {
                                 hicon = hicon_classic;
                             } else {
                                 // Fallback to main app icon
-                                if let Ok(hi) = LoadIconW(hinstance, PCWSTR(1 as *const u16)) {
+                                if let Ok(hi) = LoadIconW(hinstance, PCWSTR(std::ptr::dangling::<u16>())) {
                                     hicon = hi;
                                 }
                             }
@@ -2291,7 +2265,6 @@ impl JGrepApp {
                     set_edit_theme(HWND(eh as _), dark);
                 }
             }
-        }
 
         let (fg, bg, line) = if dark {
             (CLR_DARK_FG, CLR_DARK_BG, CLR_DARK_LINE)
@@ -2366,8 +2339,8 @@ impl JGrepApp {
                 None,
                 RDW_ERASE | RDW_FRAME | RDW_INVALIDATE | RDW_ALLCHILDREN,
             );
-            if let Some(ref dialog) = *self.setting_dialog.borrow() {
-                if let Some(raw) = dialog.window.handle.hwnd() {
+            if let Some(ref dialog) = *self.setting_dialog.borrow()
+                && let Some(raw) = dialog.window.handle.hwnd() {
                     let sh = HWND(raw as _);
                     let _ = InvalidateRect(sh, None, true);
                     let _ = RedrawWindow(
@@ -2377,7 +2350,6 @@ impl JGrepApp {
                         RDW_ERASE | RDW_FRAME | RDW_INVALIDATE | RDW_ALLCHILDREN,
                     );
                 }
-            }
         }
 
         self.tree_view.invalidate();
@@ -2394,13 +2366,13 @@ impl JGrepApp {
         self.cb_query.borrow().set_enabled(!searching);
         self.cb_dir.borrow().set_enabled(!searching);
         self.btn_browse.set_enabled(!searching);
-        self.cb_file_mask.borrow().set_enabled(!searching);
-        self.cb_dir_mask.borrow().set_enabled(!searching);
+        self.cb_mask.borrow().set_enabled(!searching);
         
         self.cb_recursive.set_enabled(!searching);
         self.cb_case_sensitive.set_enabled(!searching);
         self.cb_regex_disable.set_enabled(!searching);
         self.cb_auto_detect_encoding.set_enabled(!searching);
+        self.cb_ignore_files.set_enabled(!searching);
     }
 
     fn handle_resize(&self) {
@@ -2435,11 +2407,9 @@ impl JGrepApp {
         let btn_br_w = 65;
         let dir_w = input_w - btn_br_w - 5;
         
-        let half_w = right_width / 2;
-        let dmask_lbl_x = right_x + half_w + 5;
-        
+        let col_w = right_width / 3;
+        let cb_w = col_w - 10;
         let cb_y1 = top_offset + 95;
-        let cb_w = right_width / 2 - 10;
         let cb_y2 = top_offset + 125;
 
         // Perform DeferWindowPos transaction
@@ -2452,8 +2422,8 @@ impl JGrepApp {
 
             if let Ok(mut hdwp) = BeginDeferWindowPos(15) {
                 let defer = |mut hdwp_val, hwnd: HWND, x: i32, y: i32, cx: i32, cy: i32| {
-                    if !hwnd.is_invalid() {
-                        if let Ok(new_hdwp) = DeferWindowPos(
+                    if !hwnd.is_invalid()
+                        && let Ok(new_hdwp) = DeferWindowPos(
                             hdwp_val,
                             hwnd,
                             HWND::default(),
@@ -2465,7 +2435,6 @@ impl JGrepApp {
                         ) {
                             hdwp_val = new_hdwp;
                         }
-                    }
                     hdwp_val
                 };
 
@@ -2511,16 +2480,15 @@ impl JGrepApp {
                 hdwp = defer(hdwp, get_hwnd(&self.btn_browse.handle), input_x + dir_w + 5, top_offset + 30, btn_br_w, 25);
 
                 // Row 3
-                hdwp = defer(hdwp, get_hwnd(&self.lbl_file_mask.handle), right_x, top_offset + 60, lbl_w, 25);
-                hdwp = defer_combo(hdwp, &self.cb_file_mask.borrow(), input_x, top_offset + 60, half_w - lbl_w - 10, 25);
-                hdwp = defer(hdwp, get_hwnd(&self.lbl_dir_mask.handle), dmask_lbl_x, top_offset + 60, lbl_w, 25);
-                hdwp = defer_combo(hdwp, &self.cb_dir_mask.borrow(), dmask_lbl_x + lbl_w + 5, top_offset + 60, right_width - (half_w + 5 + lbl_w + 5), 25);
+                hdwp = defer(hdwp, get_hwnd(&self.lbl_mask.handle), right_x, top_offset + 60, lbl_w, 25);
+                hdwp = defer_combo(hdwp, &self.cb_mask.borrow(), input_x, top_offset + 60, input_w, 25);
 
                 // Checkboxes
                 hdwp = defer(hdwp, get_hwnd(&self.cb_recursive.handle), right_x, cb_y1, cb_w, 25);
-                hdwp = defer(hdwp, get_hwnd(&self.cb_case_sensitive.handle), right_x + half_w, cb_y1, cb_w, 25);
-                hdwp = defer(hdwp, get_hwnd(&self.cb_regex_disable.handle), right_x, cb_y2, cb_w, 25);
-                hdwp = defer(hdwp, get_hwnd(&self.cb_auto_detect_encoding.handle), right_x + half_w, cb_y2, cb_w, 25);
+                hdwp = defer(hdwp, get_hwnd(&self.cb_case_sensitive.handle), right_x + col_w, cb_y1, cb_w, 25);
+                hdwp = defer(hdwp, get_hwnd(&self.cb_regex_disable.handle), right_x + col_w * 2, cb_y1, cb_w, 25);
+                hdwp = defer(hdwp, get_hwnd(&self.cb_auto_detect_encoding.handle), right_x, cb_y2, cb_w, 25);
+                hdwp = defer(hdwp, get_hwnd(&self.cb_ignore_files.handle), right_x + col_w, cb_y2, cb_w, 25);
 
                 let _ = EndDeferWindowPos(hdwp);
             }
@@ -2563,7 +2531,7 @@ impl JGrepApp {
 fn check_vscode_available() -> bool {
     use std::os::windows::process::CommandExt;
     std::process::Command::new("cmd")
-        .args(&["/c", "where code"])
+        .args(["/c", "where code"])
         .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -2601,15 +2569,12 @@ fn get_documents_path() -> PathBuf {
 fn has_subdirectories(path: &Path) -> bool {
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.filter_map(|e| e.ok()) {
-            if let Ok(file_type) = entry.file_type() {
-                if file_type.is_dir() && !entry.path().is_symlink() {
-                    if let Some(name) = entry.file_name().to_str() {
-                        if !name.starts_with('.') && !name.starts_with('$') {
+            if let Ok(file_type) = entry.file_type()
+                && file_type.is_dir() && !entry.path().is_symlink()
+                    && let Some(name) = entry.file_name().to_str()
+                        && !name.starts_with('.') && !name.starts_with('$') {
                             return true;
                         }
-                    }
-                }
-            }
         }
     }
     false

@@ -41,18 +41,17 @@ pub fn list_subdirectories(path: &Path) -> Vec<(String, PathBuf)> {
         for entry in entries.filter_map(|e| e.ok()) {
             let p = entry.path();
             // Check if it is a directory and not a symlink
-            if p.is_dir() && !p.is_symlink() {
-                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+            if p.is_dir() && !p.is_symlink()
+                && let Some(name) = p.file_name().and_then(|n| n.to_str()) {
                     // Skip hidden/system directories
                     if name.starts_with('.') || name.starts_with('$') || name.eq_ignore_ascii_case("System Volume Information") {
                         continue;
                     }
                     dirs.push((name.to_string(), p));
                 }
-            }
         }
     }
     // Sort directories alphabetically (case insensitive)
-    dirs.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    dirs.sort_by_key(|a| a.0.to_lowercase());
     dirs
 }

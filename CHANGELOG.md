@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-07-12
+
+### Added
+- ファイルマスクとフォルダマスクを統合した「検索フィルター」を実装し、.gitignore 構文（ワイルドカード `*` `**`、否定 `!`、ディレクトリ限定 `/` 等）での高度なフィルタリングに対応しました。
+- 探索時に各階層の `.gitignore`, `.ignore`, `.rgignore` などの無視ファイルを動的に読み込んで適用する「無視ファイル(.gitignore等)を適用(I)」オプションを実装しました。
+- 外部エディタの設定パスが空の場合のデフォルトとして `code.exe`（VS Code）および既定の起動引数（`-g %FILENAME%:%LINE%:%COL%`）を自動設定するようにしました。
+
+### Changed
+- 検索オプション領域のチェックボックスの配置を、従来の2列から3列のすっきりしたグリッドレイアウトに変更しました。
+- マスク履歴がない場合の既定の検索フィルター初期値を `*.*; !.git/` に設定しました。
+
+### Fixed
+- ダークモード適用時に、新しく追加した「無視ファイル適用」のチェックボックスの文字色が黒のままになってしまう描画不具合を修正しました。
+- 外部エディタの設定画面でユーザーがパスや引数を手動で空にして保存した際、設定ロード時に勝手に `code.exe` などの規定値に上書き（すり替え）されてしまう動作不具合を修正しました。
+
 ## [0.1.2] - 2026-07-11
 
 ### Added
@@ -23,4 +38,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - 設定画面でのフォント変更時、見出しラベルがグループ枠線の背面に隠れてしまうZ-orderのバグを修正
 
+[0.1.3]: https://github.com/cwatanab/JGrep3/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/cwatanab/JGrep3/compare/v0.1.1...v0.1.2

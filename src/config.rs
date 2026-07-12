@@ -199,9 +199,7 @@ pub struct HistoryConfig {
     #[serde(default)]
     pub dir: Vec<String>,
     #[serde(default)]
-    pub file_mask: Vec<String>,
-    #[serde(default)]
-    pub dir_mask: Vec<String>,
+    pub mask: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -243,12 +241,29 @@ impl Default for LayoutConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+fn default_editor_path() -> String {
+    "code.exe".to_string()
+}
+
+fn default_editor_args() -> String {
+    "-g %FILENAME%:%LINE%:%COL%".to_string()
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EditorConfig {
-    #[serde(default)]
+    #[serde(default = "default_editor_path")]
     pub path: String,
-    #[serde(default)]
+    #[serde(default = "default_editor_args")]
     pub args: String,
+}
+
+impl Default for EditorConfig {
+    fn default() -> Self {
+        Self {
+            path: default_editor_path(),
+            args: default_editor_args(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -307,11 +322,10 @@ fn set_config_path(path: PathBuf) {
 }
 
 fn resolve_save_path() -> PathBuf {
-    if let Ok(guard) = CONFIG_PATH.lock() {
-        if let Some(ref p) = *guard {
+    if let Ok(guard) = CONFIG_PATH.lock()
+        && let Some(ref p) = *guard {
             return p.clone();
         }
-    }
     let portable = portable_config_path();
     if portable.is_file() {
         return portable;
@@ -325,40 +339,38 @@ fn parse_config_toml(content: &str) -> Option<AppConfig> {
 
 pub fn save_config(cfg: &AppConfig) {
     let path = resolve_save_path();
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty() {
             let _ = std::fs::create_dir_all(parent);
         }
-    }
-    if let Ok(content) = toml::to_string_pretty(cfg) {
-        if std::fs::write(&path, content).is_ok() {
+    if let Ok(content) = toml::to_string_pretty(cfg)
+        && std::fs::write(&path, content).is_ok() {
             set_config_path(path);
         }
-    }
 }
 
 pub fn load_config() -> AppConfig {
+    load_config_raw()
+}
+
+fn load_config_raw() -> AppConfig {
     // 1. Portable: ./JGrep3.toml
     let portable = portable_config_path();
-    if portable.is_file() {
-        if let Ok(content) = std::fs::read_to_string(&portable) {
-            if let Some(cfg) = parse_config_toml(&content) {
+    if portable.is_file()
+        && let Ok(content) = std::fs::read_to_string(&portable)
+            && let Some(cfg) = parse_config_toml(&content) {
                 set_config_path(portable);
                 return cfg;
             }
-        }
-    }
 
     // 2. AppData: %APPDATA%\JGrep3\JGrep3.toml
     let appdata = appdata_config_path();
-    if appdata.is_file() {
-        if let Ok(content) = std::fs::read_to_string(&appdata) {
-            if let Some(cfg) = parse_config_toml(&content) {
+    if appdata.is_file()
+        && let Ok(content) = std::fs::read_to_string(&appdata)
+            && let Some(cfg) = parse_config_toml(&content) {
                 set_config_path(appdata);
                 return cfg;
             }
-        }
-    }
 
     // 3. Defaults — first save goes to AppData
     set_config_path(appdata);

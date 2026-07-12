@@ -33,11 +33,10 @@ pub fn read_and_decode_file(
         if let Ok(s) = std::str::from_utf8(&buffer) {
             return Ok(Some(s.to_string()));
         }
-        if buffer.starts_with(&[0xEF, 0xBB, 0xBF]) {
-            if let Ok(s) = std::str::from_utf8(&buffer[3..]) {
+        if buffer.starts_with(&[0xEF, 0xBB, 0xBF])
+            && let Ok(s) = std::str::from_utf8(&buffer[3..]) {
                 return Ok(Some(s.to_string()));
             }
-        }
         let (res, _, has_errors) = encoding_rs::SHIFT_JIS.decode(&buffer);
         if !has_errors {
             return Ok(Some(res.into_owned()));

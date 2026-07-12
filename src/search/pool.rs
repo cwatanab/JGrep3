@@ -23,7 +23,7 @@ fn notify(notice: &Option<NoticeSender>) {
 }
 
 use super::decode::{looks_binary, read_and_decode_file};
-use super::glob_mask::{parse_dir_masks, parse_file_masks};
+use super::gitignore::SearchFilter;
 use super::match_engine::Matcher;
 use super::walk::{collect_files_parallel, WalkConfig};
 use super::{SearchResultItem, SearchStatus};
@@ -79,8 +79,8 @@ fn search_bytes(
 
             line_idx += 1;
 
-            if let Some(first_match) = matches.peek() {
-                if *first_match < line_end {
+            if let Some(first_match) = matches.peek()
+                && *first_match < line_end {
                     let content_bytes = &buf[line_start..content_end];
                     let column = finder.find(content_bytes).map(|c| c + 1).unwrap_or(1);
                     let lossy = String::from_utf8_lossy(content_bytes);
@@ -94,7 +94,6 @@ fn search_bytes(
                     match_count.fetch_add(1, Ordering::Relaxed);
                     while matches.next_if(|&m| m < line_end).is_some() {}
                 }
-            }
 
             if pos >= buf.len() {
                 break;
@@ -194,12 +193,12 @@ const PROGRESS_EVERY: usize = 50;
 pub fn run(
     search_dir: PathBuf,
     search_query: String,
-    file_mask_str: String,
-    dir_mask_str: String,
+    mask_str: String,
     recursive: bool,
     case_sensitive: bool,
     is_regex: bool,
     auto_detect_encoding: bool,
+    apply_ignore_files: bool,
     cancellation_token: Arc<AtomicBool>,
     sender: Sender<SearchStatus>,
     notice_sender: Option<NoticeSender>,
@@ -226,27 +225,12 @@ pub fn run(
         }
     };
 
-    let file_masks = match parse_file_masks(&file_mask_str) {
-        Ok(m) => m,
-        Err(e) => {
-            let _ = sender.send(SearchStatus::Error(format!("Invalid file mask: {}", e)));
-            notify(&notice_sender);
-            return;
-        }
-    };
-    let dir_masks = match parse_dir_masks(&dir_mask_str) {
-        Ok(m) => m,
-        Err(e) => {
-            let _ = sender.send(SearchStatus::Error(format!("Invalid dir mask: {}", e)));
-            notify(&notice_sender);
-            return;
-        }
-    };
+    let filter = SearchFilter::new(&mask_str);
 
     let walk_cfg = WalkConfig {
         recursive,
-        file_masks,
-        dir_masks,
+        filter,
+        apply_ignore_files,
     };
 
     let (path_tx, path_rx) = std::sync::mpsc::channel::<PathBuf>();
@@ -296,7 +280,7 @@ pub fn run(
                     }
                 };
                 let n = scanned.fetch_add(1, Ordering::Relaxed) + 1;
-                if n % PROGRESS_EVERY == 0 {
+                if n.is_multiple_of(PROGRESS_EVERY) {
                     let _ = sender.send(SearchStatus::Progress { scanned_files: n });
                     notify(&notice_sender);
                 }
