@@ -1082,8 +1082,8 @@ impl JGrepApp {
                         unsafe {
                             let ret = DefWindowProcW(HWND(hwnd as _), msg, WPARAM(wparam), LPARAM(lparam));
                             let p_mmi_mut = lparam as *mut UAHMEASUREMENUITEM;
-                            (*p_mmi_mut).mis.itemWidth = ((*p_mmi_mut).mis.itemWidth * 4 / 3);
-                            (*p_mmi_mut).mis.itemHeight = ((*p_mmi_mut).mis.itemHeight * 5 / 4);
+                            (*p_mmi_mut).mis.itemWidth = (*p_mmi_mut).mis.itemWidth * 4 / 3;
+                            (*p_mmi_mut).mis.itemHeight = (*p_mmi_mut).mis.itemHeight * 5 / 4;
                             return Some(ret.0 as isize);
                         }
                     }
@@ -2286,7 +2286,8 @@ impl JGrepApp {
         };
 
         unsafe {
-            // Ensure classic tree styles: + buttons, lines, lines at root
+            // Ensure classic tree styles: + buttons, lines (but NOT lines-at-root,
+            // so the root Desktop node has no expand/collapse button)
             {
                 use windows::Win32::UI::WindowsAndMessaging::{
                     GetWindowLongW, SetWindowLongW, GWL_STYLE,
@@ -2295,10 +2296,11 @@ impl JGrepApp {
                 const TVS_HASLINES: i32 = 0x0002;
                 const TVS_LINESATROOT: i32 = 0x0004;
                 let style = GetWindowLongW(tv_hwnd, GWL_STYLE);
+                let new_style = (style | TVS_HASBUTTONS | TVS_HASLINES) & !TVS_LINESATROOT;
                 SetWindowLongW(
                     tv_hwnd,
                     GWL_STYLE,
-                    style | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT,
+                    new_style,
                 );
             }
 
