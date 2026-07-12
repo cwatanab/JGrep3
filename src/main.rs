@@ -819,6 +819,20 @@ impl JGrepApp {
         // Bind image list to tree view
         self.tree_view.set_image_list(Some(&self.image_list));
 
+        // Remove TVS_LINESATROOT style to hide the "+" / "-" button on the root node (Desktop).
+        // This MUST be done before inserting any items, because TVS_LINESATROOT is cached by the
+        // TreeView control at the time the first item is inserted.
+        if let Some(tv_hwnd_raw) = self.tree_view.handle.hwnd() {
+            use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, SetWindowLongW, GWL_STYLE};
+            use windows::Win32::UI::Controls::TVS_LINESATROOT;
+            let hwnd = windows::Win32::Foundation::HWND(tv_hwnd_raw as _);
+            let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) };
+            let new_style = style & !(TVS_LINESATROOT as i32);
+            unsafe {
+                let _ = SetWindowLongW(hwnd, GWL_STYLE, new_style);
+            }
+        }
+
         // Populate tree view Explorer style: Desktop -> Documents / My Computer (Drives) / Desktop Folders
         let desktop_path = get_desktop_path();
         let desktop = self.tree_view.insert_item("デスクトップ", None, nwg::TreeInsert::Root);
@@ -850,25 +864,6 @@ impl JGrepApp {
         // Expand root Desktop & My Computer on startup
         self.tree_view.set_expand_state(&desktop, nwg::ExpandState::Expand);
         self.tree_view.set_expand_state(&my_comp, nwg::ExpandState::Expand);
-
-        // Remove TVS_LINESATROOT style to hide the "+" or "-" button on the root node (Desktop)
-        if let Some(tv_hwnd_raw) = self.tree_view.handle.hwnd() {
-            use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE};
-            use windows::Win32::UI::WindowsAndMessaging::{SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE};
-            use windows::Win32::UI::Controls::TVS_LINESATROOT;
-            let hwnd = windows::Win32::Foundation::HWND(tv_hwnd_raw as _);
-            let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) };
-            let new_style = style & !(TVS_LINESATROOT as i32);
-            unsafe {
-                let _ = SetWindowLongW(hwnd, GWL_STYLE, new_style);
-                let _ = SetWindowPos(
-                    hwnd,
-                    windows::Win32::Foundation::HWND::default(),
-                    0, 0, 0, 0,
-                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-                );
-            }
-        }
         
         // Check for VS Code availability
         *self.is_vscode_available.borrow_mut() = check_vscode_available();
