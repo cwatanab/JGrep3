@@ -402,6 +402,11 @@ pub struct JGrepApp {
     #[nwg_events(OnNotice: [JGrepApp::handle_layout_save])]
     layout_save_notice: nwg::Notice,
 
+    // Notice triggered when directory tree item is double clicked
+    #[nwg_control]
+    #[nwg_events(OnNotice: [JGrepApp::handle_tree_double_click])]
+    tree_dblclick_notice: nwg::Notice,
+
     // After user resizes a list column divider
     #[nwg_control]
     #[nwg_events(OnNotice: [JGrepApp::handle_column_resize_notice])]
@@ -423,8 +428,7 @@ pub struct JGrepApp {
     // Left Pane - Directory Tree
     #[nwg_control]
     #[nwg_events(
-        OnTreeItemExpanded: [JGrepApp::handle_tree_expand(SELF, EVT_DATA)],
-        OnTreeItemSelectionChanged: [JGrepApp::handle_tree_select(SELF, EVT_DATA)]
+        OnTreeItemExpanded: [JGrepApp::handle_tree_expand(SELF, EVT_DATA)]
     )]
     tree_view: nwg::TreeView,
 
@@ -963,6 +967,7 @@ impl JGrepApp {
 
         // Bind raw event handler: system menu settings + theme color messages + listview grid
         let notice_sender = self.setting_notice.sender();
+        let tree_dblclick_sender = self.tree_dblclick_notice.sender();
         let is_dark_cell = self.is_dark.clone();
         let brushes = self.theme_brushes.clone();
         let highlight_cell = self.highlight.clone();
@@ -977,6 +982,17 @@ impl JGrepApp {
 
             // WM_NOTIFY — ListView & TreeView custom draw (highlight + grid + tree selection)
             if msg == 0x004E && lparam != 0 {
+                #[repr(C)]
+                struct NMHDR {
+                    hwnd_from: isize,
+                    id_from: usize,
+                    code: u32,
+                }
+                let nm = unsafe { &*(lparam as *const NMHDR) };
+                if nm.hwnd_from == tv_hwnd_raw && nm.code == 0xFFFF_FFFD /* NM_DBLCLK */ {
+                    tree_dblclick_sender.notice();
+                }
+
                 let hl = highlight_cell.borrow();
                 if let Some(ret) = handle_listview_custom_draw(
                     lparam,
@@ -1694,17 +1710,34 @@ impl JGrepApp {
                 }
     }
 
-    fn handle_tree_select(&self, data: &nwg::EventData) {
-        let (_old, new) = data.on_tree_item_selection_changed();
-        let hitem = new.handle as isize;
+    fn handle_tree_double_click(&self) {
+        use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+        use windows::Win32::Foundation::{HWND, WPARAM, LPARAM};
 
-        let path = {
-            let path_map = self.path_map.borrow();
-            path_map.get(&hitem).cloned()
+        let tv_hwnd_raw = self.tree_view.handle.hwnd().map(|h| h as isize).unwrap_or(0);
+        if tv_hwnd_raw == 0 {
+            return;
+        }
+
+        // Send TVM_GETNEXTITEM with TVGN_CARET to get the currently selected tree item handle.
+        let hitem = unsafe {
+            SendMessageW(
+                HWND(tv_hwnd_raw as _),
+                0x1100 + 10, // TVM_GETNEXTITEM (TV_FIRST = 0x1100)
+                WPARAM(0x0009), // TVGN_CARET
+                LPARAM(0),
+            )
         };
 
-        if let Some(path) = path {
-            self.cb_dir.borrow().set_text(&path.to_string_lossy());
+        if hitem.0 != 0 {
+            let path = {
+                let path_map = self.path_map.borrow();
+                path_map.get(&(hitem.0 as isize)).cloned()
+            };
+
+            if let Some(path) = path {
+                self.cb_dir.borrow().set_text(&path.to_string_lossy());
+            }
         }
     }
 
