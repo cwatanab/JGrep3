@@ -2049,9 +2049,10 @@ impl JGrepApp {
     }
 
     fn handle_menu_about(&self) {
+        let version = env!("CARGO_PKG_VERSION");
         nwg::simple_message(
             "バージョン情報",
-            "JGrep3 v0.1.0\n\nRustで開発されたネイティブUI検索ソフト\nJGREP2 を参考に作成されました。"
+            &format!("JGrep3 v{}\n\nRustで開発されたネイティブUI検索ソフト\nJGREP2 を参考に作成されました。", version)
         );
     }
 
